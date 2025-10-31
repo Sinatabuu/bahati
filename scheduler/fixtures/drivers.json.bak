@@ -1,0 +1,189 @@
+[
+  {
+    "model": "scheduler.driver",
+    "pk": 1,
+    "fields": {
+      "company": 1,
+      "slug": "nan",
+      "name": "nan",
+      "phone": "",
+      "user": null,
+      "active": true,
+      "home_base_address": "",
+      "home_latitude": null,
+      "home_longitude": null,
+      "created_at": "2025-10-08T17:06:30.370304+00:00",
+      "updated_at": "2025-10-08T17:06:30.370304+00:00"
+    }
+  },
+  {
+    "model": "scheduler.driver",
+    "pk": 2,
+    "fields": {
+      "company": 1,
+      "slug": "steve-njoroge",
+      "name": "Steve Njoroge",
+      "phone": "9783326641.0",
+      "user": null,
+      "active": true,
+      "home_base_address": "",
+      "home_latitude": null,
+      "home_longitude": null,
+      "created_at": "2025-10-08T17:06:30.370304+00:00",
+      "updated_at": "2025-10-08T17:06:30.370304+00:00"
+    }
+  },
+  {
+    "model": "scheduler.driver",
+    "pk": 3,
+    "fields": {
+      "company": 1,
+      "slug": "charles-gudoyi",
+      "name": "Charles Gudoyi",
+      "phone": "9787023704.0",
+      "user": null,
+      "active": true,
+      "home_base_address": "",
+      "home_latitude": null,
+      "home_longitude": null,
+      "created_at": "2025-10-08T17:06:30.370304+00:00",
+      "updated_at": "2025-10-08T17:06:30.370304+00:00"
+    }
+  },
+  {
+    "model": "scheduler.driver",
+    "pk": 4,
+    "fields": {
+      "company": 1,
+      "slug": "david-waiyaki",
+      "name": "David Waiyaki",
+      "phone": "9784216810.0",
+      "user": null,
+      "active": true,
+      "home_base_address": "",
+      "home_latitude": null,
+      "home_longitude": null,
+      "created_at": "2025-10-08T17:06:30.370304+00:00",
+      "updated_at": "2025-10-08T17:06:30.370304+00:00"
+    }
+  },
+  {
+    "model": "scheduler.driver",
+    "pk": 5,
+    "fields": {
+      "company": 1,
+      "slug": "tony",
+      "name": "Tony",
+      "phone": "9787023705.0",
+      "user": null,
+      "active": true,
+      "home_base_address": "",
+      "home_latitude": null,
+      "home_longitude": null,
+      "created_at": "2025-10-08T17:06:30.370304+00:00",
+      "updated_at": "2025-10-08T17:06:30.370304+00:00"
+    }
+  },
+  {
+    "model": "scheduler.driver",
+    "pk": 6,
+    "fields": {
+      "company": 1,
+      "slug": "ernest",
+      "name": "Ernest",
+      "phone": "4012888886.0",
+      "user": null,
+      "active": true,
+      "home_base_address": "",
+      "home_latitude": null,
+      "home_longitude": null,
+      "created_at": "2025-10-08T17:06:30.370304+00:00",
+      "updated_at": "2025-10-08T17:06:30.370304+00:00"
+    }
+  },
+  {
+    "model": "scheduler.driver",
+    "pk": 7,
+    "fields": {
+      "company": 1,
+      "slug": "sammy-karuri",
+      "name": "Sammy Karuri",
+      "phone": "9782598623.0",
+      "user": null,
+      "active": true,
+      "home_base_address": "",
+      "home_latitude": null,
+      "home_longitude": null,
+      "created_at": "2025-10-08T17:06:30.370304+00:00",
+      "updated_at": "2025-10-08T17:06:30.370304+00:00"
+    }
+  },
+  {
+    "model": "scheduler.driver",
+    "pk": 8,
+    "fields": {
+      "company": 1,
+      "slug": "william-toribio",
+      "name": "William Toribio",
+      "phone": "9787268505.0",
+      "user": null,
+      "active": true,
+      "home_base_address": "",
+      "home_latitude": null,
+      "home_longitude": null,
+      "created_at": "2025-10-08T17:06:30.370304+00:00",
+      "updated_at": "2025-10-08T17:06:30.370304+00:00"
+    }
+  },
+  {
+    "model": "scheduler.driver",
+    "pk": 9,
+    "fields": {
+      "company": 1,
+      "slug": "kennedy",
+      "name": "Kennedy",
+      "phone": "9787268505.0",
+      "user": null,
+      "active": true,
+      "home_base_address": "",
+      "home_latitude": null,
+      "home_longitude": null,
+      "created_at": "2025-10-08T17:06:30.370304+00:00",
+      "updated_at": "2025-10-08T17:06:30.370304+00:00"
+    }
+  },
+  {
+    "model": "scheduler.driver",
+    "pk": 10,
+    "fields": {
+      "company": 1,
+      "slug": "jock",
+      "name": "Jock",
+      "phone": "9787268505.0",
+      "user": null,
+      "active": true,
+      "home_base_address": "",
+      "home_latitude": null,
+      "home_longitude": null,
+      "created_at": "2025-10-08T17:06:30.370304+00:00",
+      "updated_at": "2025-10-08T17:06:30.370304+00:00"
+    }
+  },
+  {
+    "model": "scheduler.driver",
+    "pk": 11,
+    "fields": {
+      "company": 1,
+      "slug": "joshua-muniu",
+      "name": "Joshua Muniu",
+      "phone": "9787268505.0",
+      "user": null,
+      "active": true,
+      "home_base_address": "",
+      "home_latitude": null,
+      "home_longitude": null,
+      "created_at": "2025-10-08T17:06:30.370304+00:00",
+      "updated_at": "2025-10-08T17:06:30.370304+00:00"
+    }
+  }
+]

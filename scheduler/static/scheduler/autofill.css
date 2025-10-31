@@ -1,0 +1,23 @@
+/* Keep the spinner neatly inline with the Client <select> */
+
+/* Make only the client select render inline so spinner can sit beside it */
+#id_client {
+  display: inline-flex;         /* keeps height nice and vertical-centered */
+  align-items: center;
+  vertical-align: middle;
+}
+
+/* The spinner container we inject next to the select */
+.auto-spinner-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 8px;             /* space between select and spinner */
+  vertical-align: middle;
+}
+
+/* Optional: a subtle layout guard so long labels don’t break the line */
+.auto-spinner-wrap .auto-spinner {
+  width: 16px;
+  height: 16px;
+}

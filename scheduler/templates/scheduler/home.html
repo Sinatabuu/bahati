@@ -1,0 +1,495 @@
+{# scheduler/templates/scheduler/home.html #}
+{% extends "scheduler/base.html" %}
+{% load static %}
+
+{% block title %}Dashboard · Bahati Scheduler{% endblock %}
+
+{% block content %}
+<div class="container mt-5">
+
+  <!-- Header -->
+  <div class="text-center mb-4">
+    <h1 class="display-5 fw-bold">Dashboard</h1>
+    <p class="text-muted">Manage your schedules, clients, and drivers</p>
+  </div>
+
+  <div class="row g-4">
+
+    <!-- Schedules Card -->
+    <div class="col-md-4">
+      <div class="card shadow-sm h-100">
+        <div class="card-body text-center">
+          <h5 class="card-title">
+            <i class="fa-solid fa-calendar-days text-primary"></i> Schedules
+          </h5>
+          <p class="card-text text-muted small">Generate, view, and manage daily trips.</p>
+
+          {% if user.is_authenticated %}
+            {% if user.is_staff %}
+              <!-- View All goes to the per-day viewer -->
+              <a href="{% url 'scheduler:schedule_today_page' %}" class="btn btn-outline-primary btn-sm w-100 mb-2">
+                <i class="fa-solid fa-list"></i> View All Schedules
+              </a>
+
+              <!-- Open modal with date + mode -->
+              <button id="btn-generate-open" class="btn btn-primary btn-sm w-100 mb-1">
+                <i class="fa-solid fa-gears"></i> Generate Schedule…
+              </button>
+
+              <a href="{% url 'scheduler:add_schedule' %}" class="btn btn-light btn-sm w-100 mb-1">
+                <i class="fa-solid fa-plus"></i> Add Schedule
+              </a>
+              <a href="{% url 'scheduler:cancelled_schedule' %}" class="btn btn-light btn-sm w-100">
+                <i class="fa-solid fa-xmark text-danger"></i> Cancelled
+              </a>
+            {% else %}
+              <a href="{% url 'scheduler:driver_my_schedule' %}" class="btn btn-outline-success btn-sm w-100 mb-2">
+                <i class="fa-solid fa-calendar-check"></i> My Schedule
+              </a>
+            {% endif %}
+
+            <a class="btn btn-outline-secondary w-100"
+               href="{% url 'scheduler:daily_schedule_sheet' %}?date={{ today|date:'Y-m-d' }}"
+               target="_blank" rel="noopener">
+              Print schedule
+            </a>
+
+          {% else %}
+            <a href="{% url 'scheduler:user_login' %}" class="btn btn-outline-primary btn-sm w-100 mb-2">
+              <i class="fa-solid fa-right-to-bracket"></i> Log In
+            </a>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+
+    <!-- Clients Card -->
+    <div class="col-md-4">
+      <div class="card shadow-sm h-100">
+        <div class="card-body text-center">
+          <h5 class="card-title">
+            <i class="fa-solid fa-user-group text-success"></i> Clients
+          </h5>
+          <p class="card-text text-muted small">Add and manage client information.</p>
+          <a href="{% url 'scheduler:add_client' %}" class="btn btn-success btn-sm w-100 mb-2">
+            <i class="fa-solid fa-user-plus"></i> Add Client
+          </a>
+          <a href="{% url 'scheduler:client_list' %}" class="btn btn-light btn-sm w-100">
+            <i class="fa-solid fa-users"></i> View Clients
+          </a>
+        </div>
+      </div>
+    </div>
+
+    <!-- Drivers Card -->
+    <div class="col-md-4">
+      <div class="card shadow-sm h-100">
+        <div class="card-body text-center">
+          <h5 class="card-title">
+            <i class="fa-solid fa-car-side text-info"></i> Drivers
+          </h5>
+          <p class="card-text text-muted small">Manage driver profiles.</p>
+          {% if user.is_staff %}
+            <a href="{% url 'scheduler:add_driver' %}" class="btn btn-info btn-sm w-100 mb-2 text-white">
+              <i class="fa-solid fa-user-plus"></i> Add Driver
+            </a>
+            <a href="{% url 'scheduler:driver_list' %}" class="btn btn-light btn-sm w-100">
+              <i class="fa-solid fa-id-card"></i> View Drivers
+            </a>
+            <a href="{% url 'scheduler:driver_dashboard' %}" class="btn btn-outline-info btn-sm w-100">
+              <i class="fa-solid fa-map-location-dot"></i> Driver Dashboard (Map & Status)
+            </a>
+          {% else %}
+            <p class="text-muted small mt-2">Driver access only.</p>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+
+  </div> <script></script>
+
+  <!-- Today’s Schedules Table -->
+  <div class="mt-4">
+    <h4><i class="fa-solid fa-list"></i> Today’s Schedules</h4>
+
+    {% if all_schedules %}
+      <div class="table-responsive">
+        <table class="table table-modern table-hover align-middle" id="today-table">
+          <caption class="text-muted">Today’s trips for drivers and clients</caption>
+          <thead>
+            <tr>
+              <th scope="col" class="text-uppercase small">Date</th>
+              <th scope="col" class="text-uppercase small">Client</th>
+              <th scope="col" class="text-uppercase small">Driver</th>
+              <th scope="col" class="text-uppercase small">Pickup</th>
+              <th scope="col" class="text-uppercase small">Dropoff</th>
+              <th scope="col" class="text-uppercase small text-nowrap">Time</th>
+              <th scope="col" class="text-uppercase small">Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for s in all_schedules %}
+            <tr class="row-status"
+                data-status="{{ s.status|default:'scheduled'|lower }}"
+                data-driver="{{ s.driver.name|default:'' }}">
+              <td class="text-nowrap fw-semibold">{{ s.schedule.date|date:"M d" }}</td>
+
+              <td>
+                <div class="fw-semibold">
+                  {{ s.client.name|default:s.client_name|default:"—" }}
+                </div>
+              </td>
+
+              <td class="driver-col">
+                {% if s.driver.name %}
+                  <span class="driver-pill" title="{{ s.driver.name }}">
+                    <span class="driver-ava">{{ s.driver.name|slice:":1" }}</span>
+                    <span class="fw-semibold">{{ s.driver.name }}</span>
+                  </span>
+                {% else %}
+                  <span class="badge status-unassigned">Unassigned</span>
+                {% endif %}
+              </td>
+
+              <td class="addr">
+                <div class="line1">{{ s.pickup_address|default:"—" }}</div>
+                {% if s.pickup_city or s.pickup_state %}
+                  <div class="line2">
+                    {{ s.pickup_city }}{% if s.pickup_city and s.pickup_state %}, {% endif %}{{ s.pickup_state }}
+                  </div>
+                {% endif %}
+              </td>
+
+              <td class="addr">
+                <div class="line1">{{ s.dropoff_address|default:"—" }}</div>
+                {% if s.dropoff_city or s.dropoff_state %}
+                  <div class="line2">
+                    {{ s.dropoff_city }}{% if s.dropoff_city and s.dropoff_state %}, {% endif %}{{ s.dropoff_state }}
+                  </div>
+                {% endif %}
+              </td>
+
+              <td class="time-cell text-nowrap">
+                {% if s.start_time %}
+                  {{ s.start_time|time:"g:i A" }}
+                {% elif s.end_time %}
+                  {{ s.end_time|time:"g:i A" }}
+                {% else %}—{% endif %}
+              </td>
+
+              <td>
+                {% if s.status %}
+                  {% if s.status|lower == "completed" %}
+                    <span class="badge status-completed">Completed</span>
+                  {% elif s.status|lower == "arrived" %}
+                    <span class="badge status-arrived">Arrived</span>
+                  {% elif s.status|lower == "en route" or s.status|lower == "enroute" %}
+                    <span class="badge status-enroute">En Route</span>
+                  {% elif s.status|lower == "cancelled" %}
+                    <span class="badge status-cancelled">Cancelled</span>
+                  {% else %}
+                    <span class="badge status-default">{{ s.status|title }}</span>
+                  {% endif %}
+                {% else %}
+                  <span class="badge status-default">Scheduled</span>
+                {% endif %}
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+
+      <!-- Legend -->
+      <div class="mt-2 d-flex flex-wrap align-items-center gap-2 small">
+        <span class="legend-chip legend-completed">Completed</span>
+        <span class="legend-chip legend-arrived">Arrived</span>
+        <span class="legend-chip legend-enroute">En Route</span>
+        <span class="legend-chip legend-cancelled">Cancelled</span>
+        <span class="legend-chip legend-default">Scheduled</span>
+        <span class="legend-chip legend-driver">Driver tint</span>
+        <span class="legend-chip legend-unassigned">Unassigned</span>
+      </div>
+
+    {% else %}
+      <div class="alert alert-info text-center">
+        <i class="fa-solid fa-calendar-days"></i>
+        No schedules generated for today.
+        {% if user.is_staff %}
+          <div class="mt-2">
+            <button id="btn-generate-empty" class="btn btn-primary btn-sm">
+              <i class="fa-solid fa-gears"></i> Generate Today’s Schedule
+            </button>
+          </div>
+        {% endif %}
+      </div>
+    {% endif %}
+  </div>
+
+</div>
+
+{% if user.is_staff %}
+<!-- Generate Modal -->
+<div class="modal fade" id="genModal" tabindex="-1" aria-labelledby="genModalLabel" aria-hidden="true">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="genModalLabel"><i class="fa-solid fa-gears me-2"></i>Generate Schedule</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+
+      <div class="modal-body">
+        <form id="genForm" onsubmit="return false;">
+          <div class="mb-3">
+            <label class="form-label">Date</label>
+            <input id="genDate" type="date" class="form-control" required>
+          </div>
+
+          <div class="mb-3">
+            <label class="form-label">Mode</label>
+            <select id="genMode" class="form-select">
+              <option value="replace">Replace (fresh)</option>
+              <option value="append">Append (skip exact dups)</option>
+              <option value="sync">Sync (skip exact dups)</option>
+            </select>
+          </div>
+
+          <div class="row g-3">
+            <div class="col-6">
+              <div class="form-check">
+                <input id="genFromTpl" class="form-check-input" type="checkbox" checked>
+                <label class="form-check-label" for="genFromTpl">From template</label>
+              </div>
+            </div>
+            <div class="col-6">
+              <div class="form-check">
+                <input id="genFromStand" class="form-check-input" type="checkbox" checked>
+                <label class="form-check-label" for="genFromStand">From standing</label>
+              </div>
+            </div>
+          </div>
+
+          <div class="mt-2">
+            <div class="form-check">
+              <input id="genForce" class="form-check-input" type="checkbox">
+              <label class="form-check-label" for="genForce">
+                Force (override duplicate guard for append/sync)
+              </label>
+            </div>
+          </div>
+        </form>
+
+        <div id="genAlert" class="alert d-none mt-3" role="alert"></div>
+        <pre id="genOut" class="mt-2 bg-light p-2 border rounded small" style="max-height: 220px; overflow:auto;"></pre>
+      </div>
+
+      <div class="modal-footer">
+        <button id="btnDryRun" type="button" class="btn btn-outline-secondary">Dry-run</button>
+        <button id="btnGenerateNow" type="button" class="btn btn-primary">
+          <i class="fa-solid fa-play me-1"></i>Generate
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+{% block extra_js %}
+<script>
+(() => {
+  // Guard: ensure Bootstrap bundle is loaded
+  if (!window.bootstrap) {
+    document.addEventListener('DOMContentLoaded', () => {
+      if (!window.bootstrap) {
+        console.warn('Bootstrap not loaded yet, retrying...');
+      }
+    });
+  }
+
+  // Bootstrap modal
+  const genModalEl = document.getElementById('genModal');
+  const genModal = genModalEl ? new bootstrap.Modal(genModalEl) : null;
+
+  const btnOpen   = document.getElementById('btn-generate-open');
+  const btnGen    = document.getElementById('btnGenerateNow');
+  const btnDry    = document.getElementById('btnDryRun');
+  const out       = document.getElementById('genOut');
+  const alertBox  = document.getElementById('genAlert');
+
+  const dateInp   = document.getElementById('genDate');
+  const modeSel   = document.getElementById('genMode');
+  const chkTpl    = document.getElementById('genFromTpl');
+  const chkStand  = document.getElementById('genFromStand');
+  const chkForce  = document.getElementById('genForce');
+
+  function setTodayIfEmpty() {
+    if (!dateInp?.value) {
+      const t = new Date();
+      dateInp.value = `${t.getFullYear()}-${String(t.getMonth()+1).padStart(2,'0')}-${String(t.getDate()).padStart(2,'0')}`;
+    }
+  }
+
+  const csrf =
+    document.querySelector('input[name=csrfmiddlewaretoken]')?.value ||
+    (document.cookie.split('; ').find(c => c.startsWith('csrftoken='))||'').split('=')[1] || '';
+
+  async function postJSON(url, payload) {
+    const res = await fetch(url, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrf },
+      body: JSON.stringify(payload)
+    });
+    const txt = await res.text();
+    let json;
+    try { json = JSON.parse(txt); } catch { json = { ok:false, error:'Invalid JSON from server', raw: txt }; }
+    return { status: res.status, json };
+  }
+
+  function showAlert(kind, msg) {
+    alertBox.className = `alert alert-${kind}`;
+    alertBox.textContent = msg;
+    alertBox.classList.remove('d-none');
+  }
+  function clearAlert() {
+    alertBox.classList.add('d-none');
+    alertBox.textContent = '';
+  }
+
+  async function generate({ dryRun=false } = {}) {
+    clearAlert();
+    if (out) out.textContent = 'Working…';
+
+    const payload = {
+      date: dateInp.value,
+      mode: modeSel.value,                    // replace | append | sync
+      from_template: chkTpl.checked,
+      from_standing: chkStand.checked
+    };
+    if (!dryRun) payload.force = chkForce.checked;
+    if (dryRun)  payload.dry_run = true;
+
+    const { status, json } = await postJSON('/service/generate/schedule/', payload);
+    if (out) out.textContent = JSON.stringify(json, null, 2);
+
+    if (json.ok) {
+      showAlert('success', dryRun ? 'Dry-run successful (no data changed).' : 'Schedule generated successfully.');
+      if (!dryRun) setTimeout(() => window.location.reload(), 700);
+    } else {
+      if (status === 409) {
+        showAlert('warning', json.error || 'Entries already exist. Use Replace or check Force to override.');
+      } else {
+        showAlert('danger', json.error || 'Generation failed.');
+      }
+    }
+  }
+
+  // Open modal
+  btnOpen?.addEventListener('click', (e) => {
+    e.preventDefault();
+    setTodayIfEmpty();
+    out && (out.textContent = '');
+    clearAlert();
+    genModal?.show();
+  });
+
+  // Generate now
+  btnGen?.addEventListener('click', () => generate({ dryRun:false }));
+
+  // Dry-run
+  btnDry?.addEventListener('click', () => generate({ dryRun:true }));
+})();
+</script>
+{% endblock %}
+
+{% endif %}
+
+<script>
+/* Driver-based row tinting (soft), independent of status band */
+(function(){
+  const palette = [
+    '#EEF2FF', '#E6FFFA', '#FFF7ED', '#F0FDF4',
+    '#FDF4FF', '#ECFEFF', '#FEFCE8', '#F5F3FF'
+  ]; // gentle tints
+
+  function djb2(str){
+    let h = 5381; for (let i=0; i<str.length; i++) h = ((h<<5)+h) + str.charCodeAt(i);
+    return Math.abs(h);
+  }
+
+  const rows = document.querySelectorAll('#today-table tbody tr.row-status');
+  rows.forEach(tr => {
+    const driver = (tr.getAttribute('data-driver') || '').trim();
+    if (driver) {
+      const idx = djb2(driver.toLowerCase()) % palette.length;
+      tr.style.setProperty('--row-tint', palette[idx]);
+      tr.classList.add('driver-tinted');
+    } else {
+      // Unassigned gets a consistent soft purple tint
+      tr.style.setProperty('--row-tint', '#F4F1FF');
+      tr.classList.add('driver-tinted');
+    }
+  });
+})();
+</script>
+
+<style>
+/* Modern table look */
+.table-modern thead th {
+  position: sticky; top: 0; z-index: 1;
+  background: #0d1b2a; color: #fff; border-color: #0d1b2a;
+}
+.table-modern tbody tr:nth-child(even){ background: #fafbff; }
+.table-modern tbody tr:hover{ background: #f6f8ff; }
+
+/* Address cell: two lines, better wrapping */
+.addr { max-width: 36ch; word-break: break-word; }
+.addr .line1 { font-weight: 600; }
+.addr .line2 { font-size: .85rem; color: #6c757d; }
+
+/* Driver chip */
+.driver-pill { display: inline-flex; align-items: center; gap: .5rem; }
+.driver-ava {
+  width: 28px; height: 28px; border-radius: 9999px;
+  background: #e9ecef; color: #495057; display: inline-grid; place-items: center;
+  font-weight: 700; font-size: .85rem;
+}
+
+/* Status pills */
+.badge { border-radius: 9999px; padding: .35rem .6rem; font-weight: 600; }
+.status-completed  { background: #d1e7dd; color: #0f5132; }
+.status-arrived    { background: #cff4fc; color: #055160; }
+.status-enroute    { background: #fff3cd; color: #7a5d00; }
+.status-cancelled  { background: #f8d7da; color: #842029; }
+.status-default    { background: #e2e3e5; color: #41464b; }
+.status-unassigned { background: #e7e0ff; color: #4b3fa6; }
+
+/* Time column: crisp numerals */
+.time-cell { font-variant-numeric: tabular-nums; }
+
+/* Status color band on row (thin left border) */
+tr.row-status { border-left: 6px solid #d8dbe0; }
+tr.row-status[data-status="completed"] { border-left-color: #198754; }   /* green */
+tr.row-status[data-status="arrived"]   { border-left-color: #0dcaf0; }   /* teal */
+tr.row-status[data-status="en route"],
+tr.row-status[data-status="enroute"]   { border-left-color: #fd7e14; }   /* orange */
+tr.row-status[data-status="cancelled"] { border-left-color: #dc3545; }   /* red */
+tr.row-status[data-status="scheduled"] { border-left-color: #6c757d; }   /* gray */
+
+/* Driver tint on row (very soft background using CSS var) */
+tr.driver-tinted { background: var(--row-tint, #ffffff); }
+tr.driver-tinted:hover { filter: brightness(0.99); }
+
+/* Legend chips */
+.legend-chip {
+  display:inline-block; padding:.25rem .5rem; border-radius:9999px; border:1px solid #e5e7eb;
+  background:#fff; color:#374151;
+}
+.legend-completed { border-color:#198754; color:#198754; }
+.legend-arrived   { border-color:#0dcaf0; color:#0dcaf0; }
+.legend-enroute   { border-color:#fd7e14; color:#fd7e14; }
+.legend-cancelled { border-color:#dc3545; color:#dc3545; }
+.legend-default   { border-color:#6c757d; color:#6c757d; }
+.legend-driver    { border-color:#6b7280; color:#6b7280; }
+.legend-unassigned{ border-color:#4b3fa6; color:#4b3fa6; }
+</style>
+{% endblock %}

@@ -1,0 +1,13 @@
+{% extends "scheduler/base.html" %}
+{% block content %}
+  <h4>✅ Today’s schedule was already generated.</h4>
+  <a href="{% url 'schedule:today_schedule' %}" class="btn btn-secondary">View Schedule</a>
+{% endblock %}
+{% block extra_css %}
+  <style>
+    body { font-family: Arial, sans-serif; padding: 20px; background: #f4f6f9; }
+    h4 { color: #333; text-align: center; }
+    .btn { display: inline-block; background: #007BFF; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; font-size: 16px; margin-top: 20px; }
+    .btn:hover { background: #0056b3; }
+  </style>
+{% endblock %}

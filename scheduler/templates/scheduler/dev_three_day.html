@@ -1,0 +1,76 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Three-Day Schedule Generator</title>
+  <style>
+    body { font: 14px/1.4 system-ui, sans-serif; margin: 20px; }
+    input, button { padding: 6px 10px; }
+    button { margin-right: 8px; }
+    #out { white-space: pre-wrap; background:#f6f6f7; padding:12px; border-radius:8px; }
+  </style>
+</head>
+<body>
+  <h1>Three-Day Schedule Test</h1>
+
+  <form id="csrf-form">{% csrf_token %}</form>
+
+  <label>Dates (comma-separated):</label>
+  <input id="dates" size="40" value="2025-09-08,2025-09-09,2025-09-10" />
+  <div style="margin:10px 0;">
+    <button id="btn-generate">Generate (replace)</button>
+    <button id="btn-publish" type="button">Publish</button>
+  </div>
+
+  <h3>Output</h3>
+  <div id="out">Waiting…</div>
+
+  <script>
+    const out = document.getElementById('out');
+    const csrf = document.querySelector('#csrf-form input[name=csrfmiddlewaretoken]')?.value
+      || (document.cookie.split('; ').find(c => c.startsWith('csrftoken='))||'').split('=')[1];
+
+    function log(...args) {
+      out.textContent += '\\n' + args.map(a => (typeof a === 'string' ? a : JSON.stringify(a, null, 2))).join(' ');
+    }
+    function set(text) { out.textContent = text; }
+
+    async function jpost(url, body) {
+      const r = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrf },
+        credentials: 'same-origin',
+        body: JSON.stringify(body)
+      });
+      const t = await r.text();
+      try { return { status: r.status, json: JSON.parse(t) }; }
+      catch { return { status: r.status, text: t }; }
+    }
+
+    document.getElementById('btn-generate').addEventListener('click', async (e) => {
+      e.preventDefault();
+      set('Generating…');
+      const dates = document.getElementById('dates').value.split(',').map(s => s.trim()).filter(Boolean);
+      for (const date of dates) {
+        const gen = await jpost('/service/generate/schedule/', { date, from_template: true, mode: 'replace' });
+        log(`GENERATED ${date} →`, gen);
+        const sid = gen.json?.schedule_id;
+        if (sid) {
+          const listRes = await fetch(`/service/schedule/${sid}/entries/`, { credentials:'same-origin' });
+          const list = await listRes.json().catch(()=>({}));
+          log(`ENTRIES ${date} count=`, list.count);
+        }
+      }
+      log('Done.');
+    });
+
+    document.getElementById('btn-publish').addEventListener('click', async () => {
+      const dates = document.getElementById('dates').value.split(',').map(s => s.trim()).filter(Boolean);
+      for (const date of dates) {
+        const res = await jpost('/service/schedule/set-status/', { date, status: 'final' });
+        log(`PUBLISHED ${date} →`, res);
+      }
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,17 @@
+{% extends 'scheduler/base.html' %}
+
+{% block content %}
+<div class="container mx-auto p-4 md:p-8">
+    <div class="bg-white p-6 rounded-lg shadow-md">
+        <h1 class="text-3xl font-bold text-gray-800 mb-6">Edit Schedule Entry</h1>
+        <form method="post" class="space-y-4">
+            {% csrf_token %}
+            {{ form.as_p }}
+            <div class="flex items-center space-x-4">
+                <button type="submit" class="bg-indigo-600 text-white font-bold py-2 px-4 rounded-md shadow-md hover:bg-indigo-700 transition duration-300">Update Entry</button>
+                <a href="{% url 'scheduler:driver_schedule_detail' driver_id=entry.driver.id date=entry.date %}" class="text-gray-500 hover:text-gray-700 transition duration-300">Cancel</a>
+            </div>
+        </form>
+    </div>
+</div>
+{% endblock %}

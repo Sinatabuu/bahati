@@ -1,0 +1,188 @@
+"""
+Django settings for bahati_service (prod/staging + local).
+"""
+import os
+from pathlib import Path
+from urllib.parse import urlparse
+import dj_database_url
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+
+# ----------------------------- Core -----------------------------
+SECRET_KEY = os.getenv("SECRET_KEY", "dev-insecure-key")  # set real one in prod
+DEBUG = os.getenv("DEBUG", "false").lower() == "true"
+
+# --- Host & proxy settings (dev + quick tunnel) ---
+import os
+
+ALLOWED_HOSTS = [
+    "127.0.0.1",
+    "localhost",
+    "bahati.bahatitransport.com",
+    "api.bahatitransport.com",
+    ".trycloudflare.com",  # allow any quick-tunnel host
+]
+
+CSRF_TRUSTED_ORIGINS = [
+    "https://bahati.bahatitransport.com",
+    "https://api.bahatitransport.com",
+    "https://*.trycloudflare.com",  # trust any quick-tunnel origin
+]
+
+# Honor Cloudflare's proto header so request.is_secure() works
+SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+
+
+
+# ----------------------------- Apps -----------------------------
+INSTALLED_APPS = [
+    "whitenoise.runserver_nostatic",  # keep before django.contrib.staticfiles
+    "django.contrib.admin",
+    "django.contrib.auth",
+    "django.contrib.contenttypes",
+    "django.contrib.sessions",
+    "django.contrib.messages",
+    "django.contrib.staticfiles",
+    "corsheaders",
+    "scheduler.apps.SchedulerConfig",
+    "rest_framework",
+]
+
+# -------------------------- Middleware --------------------------
+MIDDLEWARE = [
+    "django.middleware.security.SecurityMiddleware",
+    "whitenoise.middleware.WhiteNoiseMiddleware",  # right after SecurityMiddleware
+    "corsheaders.middleware.CorsMiddleware",
+    "django.contrib.sessions.middleware.SessionMiddleware",
+    "django.middleware.common.CommonMiddleware",
+    "scheduler.middleware.CurrentUserMiddleware",
+    "django.middleware.csrf.CsrfViewMiddleware",
+    "django.contrib.auth.middleware.AuthenticationMiddleware",
+    "django.contrib.messages.middleware.MessageMiddleware",
+    "django.middleware.clickjacking.XFrameOptionsMiddleware",
+]
+
+ROOT_URLCONF = "bahati_service.urls"
+
+# --------------------------- Templates --------------------------
+TEMPLATES = [
+    {
+        "BACKEND": "django.template.backends.django.DjangoTemplates",
+        "DIRS": [BASE_DIR / "templates"],
+        "APP_DIRS": True,
+        "OPTIONS": {
+            "context_processors": [
+                "django.template.context_processors.debug",
+                "django.template.context_processors.request",
+                "django.contrib.auth.context_processors.auth",
+                "django.contrib.messages.context_processors.messages",
+            ],
+        },
+    },
+]
+
+WSGI_APPLICATION = "bahati_service.wsgi.application"
+
+# --------------------------- Database ---------------------------
+DATABASE_URL = os.getenv("DATABASE_URL", "")
+
+def _needs_ssl(url: str) -> bool:
+    scheme = urlparse(url).scheme.lower()
+    return scheme.startswith("postgres")
+
+if DATABASE_URL:
+    DATABASES = {
+        "default": dj_database_url.config(
+            default=DATABASE_URL,
+            conn_max_age=600,
+            ssl_require=_needs_ssl(DATABASE_URL),
+        )
+    }
+else:
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.sqlite3",
+            "NAME": BASE_DIR / "db.sqlite3",
+        }
+    }
+
+# -------------------- Password Validation ----------------------
+AUTH_PASSWORD_VALIDATORS = [
+    {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
+    {"NAME": "django.contrib.auth.password_validation.MinimumLengthValidator"},
+    {"NAME": "django.contrib.auth.password_validation.CommonPasswordValidator"},
+    {"NAME": "django.contrib.auth.password_validation.NumericPasswordValidator"},
+]
+
+# --------------------------- I18N/TZ ----------------------------
+LANGUAGE_CODE = "en-us"
+TIME_ZONE = os.getenv("TIME_ZONE", "America/New_York")
+USE_I18N = True
+USE_TZ = True
+
+# ---------------------------- Static ---------------------------
+STATIC_URL = "/static/"
+STATIC_ROOT = BASE_DIR / "staticfiles"
+STATICFILES_STORAGE = "whitenoise.storage.CompressedManifestStaticFilesStorage"
+
+DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+
+# ------------------------ Auth redirects ------------------------
+LOGIN_URL = "scheduler:user_login"
+LOGIN_REDIRECT_URL = "scheduler:home"
+LOGOUT_REDIRECT_URL = "scheduler:user_login"
+
+# ---------------------- Email (default) -------------------------
+EMAIL_BACKEND = os.getenv("EMAIL_BACKEND", "django.core.mail.backends.console.EmailBackend")
+
+# -------------------- Cookies / Security -----------------------
+SESSION_COOKIE_NAME = "sessionid"
+SESSION_COOKIE_SAMESITE = "Lax"
+CSRF_COOKIE_SAMESITE = "Lax"
+
+# Secure cookies in prod
+SESSION_COOKIE_SECURE = not DEBUG
+CSRF_COOKIE_SECURE = not DEBUG
+
+SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+USE_X_FORWARDED_HOST = True
+
+# 🔧 Avoid redirect loops while we stabilize
+SECURE_SSL_REDIRECT = False
+
+if not DEBUG:
+    SECURE_HSTS_SECONDS = 86400
+    SECURE_HSTS_INCLUDE_SUBDOMAINS = True
+    SECURE_HSTS_PRELOAD = False
+
+
+# ----------------------- CORS / CSRF ---------------------------
+def _split_env(name, default=""):
+    return [x.strip() for x in os.getenv(name, default).split(",") if x.strip()]
+
+# For local dev SPAs only; production front-end is same origin
+CORS_ALLOWED_ORIGINS = _split_env("CORS_ALLOWED_ORIGINS",
+    "http://127.0.0.1:3000,http://localhost:3000,http://127.0.0.1:5174,http://localhost:5174"
+)
+# If your browser hits API from bahati.* you can also include:
+# CORS_ALLOWED_ORIGINS += ["https://bahati.bahatitransport.com"]
+
+CORS_ALLOW_CREDENTIALS = True
+
+# Must be full scheme+host (no paths)
+CSRF_TRUSTED_ORIGINS = [
+    "https://bahati.bahatitransport.com",
+    "https://api.bahatitransport.com",
+    "https://*.trycloudflare.com",  # trust any quick-tunnel origin
+]
+
+# Make trailing slashes forgiving
+APPEND_SLASH = True
+
+# -------------------------- Logging ----------------------------
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "handlers": {"console": {"class": "logging.StreamHandler"}},
+    "root": {"handlers": ["console"], "level": os.getenv("DJANGO_LOG_LEVEL", "INFO")},
+}

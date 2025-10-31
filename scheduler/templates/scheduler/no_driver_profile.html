@@ -1,0 +1,16 @@
+{% extends 'scheduler/base.html' %}
+
+{% block content %}
+<div class="container mt-5">
+  <div class="alert alert-warning text-center">
+    <h4 class="alert-heading">🚫 Driver Profile Missing</h4>
+    <p>Hi {{ user.username }}, we couldn’t find a driver profile linked to your account.</p>
+    <hr>
+    <p class="mb-0">Please contact the administrator to create or link your driver profile.</p>
+  </div>
+  <div class="text-center mt-3">
+    <a href="{% url 'scheduler:home' %}" class="btn btn-primary">⬅ Back to Home</a>
+  </div>
+</div>
+{% endblock %}
+

@@ -1,0 +1,333 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Schedule Viewer</title>
+  <style>
+    body { font: 14px/1.4 system-ui, sans-serif; margin: 20px; }
+    table { border-collapse: collapse; width: 100%; margin-top: 12px; }
+    th, td { border: 1px solid #e5e7eb; padding: 6px 8px; text-align: left; }
+    th { background: #f3f4f6; }
+    .row-actions button { margin-right: 6px; }
+    .toolbar { display:flex; gap:8px; align-items:center; }
+    input, select, button { padding:6px 8px; }
+    #msg { margin-top: 8px; color:#2563eb; }
+  </style>
+</head>
+<body>
+  <h1>Admin Schedule Viewer</h1>
+
+  <form id="csrf-form">{% csrf_token %}</form>
+
+  <div class="toolbar">
+    <label for="date">Date:</label>
+    <input id="date" type="date" />
+    <button id="load">Load</button>
+    <span id="msg"></span>
+  </div>
+
+  <div class="toolbar">
+    <label for="driver">Reassign to:</label>
+    <select id="driver"></select>
+    <small>(select a row, then click "Reassign")</small>
+  </div>
+
+  <!-- Simulator panel -->
+<fieldset id="sim-panel" style="margin-top:16px; border:1px solid #e5e7eb; padding:10px; border-radius:8px;">
+  <legend><b>Bulk Simulate (dispatch morning)</b></legend>
+
+  <div class="toolbar" style="flex-wrap:wrap; gap:10px;">
+    <!-- Uses the same #date input at the top -->
+    <label>Stops:</label>
+    <input id="sim-count" type="number" min="1" max="200" value="28" style="width:80px;" />
+
+    <label>Mode:</label>
+    <select id="sim-mode">
+      <option value="replace" selected>replace (clean slate)</option>
+      <option value="sync">sync (append-only)</option>
+    </select>
+
+    <label>Use template first:</label>
+    <input id="sim-template" type="checkbox" checked />
+
+    <label>Start hour:</label>
+    <input id="sim-start" type="number" min="0" max="23" value="7" style="width:70px;" />
+
+    <label>Interval (min):</label>
+    <input id="sim-interval" type="number" min="5" max="60" step="5" value="15" style="width:80px;" />
+
+    <button id="simulate" class="px-3 py-1 rounded bg-black text-white">Run Simulation</button>
+    <button id="publish-day" class="px-3 py-1 rounded border">Publish Day</button>
+  </div>
+
+  <small>Tip: keep <i>replace</i> while testing; switch to <i>sync</i> for live append-only.</small>
+</fieldset>
+
+
+  <table id="grid">
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>Pickup</th>
+        <th>Client</th>
+        <th>Driver</th>
+        <th>Status</th>
+        <th class="row-actions">Actions</th>
+      </tr>
+    </thead>
+    <tbody></tbody>
+  </table>
+
+  <script>
+    const token = document.querySelector('#csrf-form input[name=csrfmiddlewaretoken]')?.value
+      || (document.cookie.split('; ').find(c=>c.startsWith('csrftoken='))||'').split('=')[1];
+
+    const $ = sel => document.querySelector(sel);
+    const tbody = $('#grid tbody');
+    const msg = $('#msg');
+
+    let scheduleId = null;
+    let entries = [];
+    let drivers = [];
+
+    function say(t) { msg.textContent = t; }
+    function fmtTime(s) { return s ? s.slice(0,5) : ''; }
+
+    async function jget(url) {
+      const r = await fetch(url, { credentials: 'same-origin' });
+      const t = await r.text();
+      try { return JSON.parse(t); } catch { return { ok:false, status:r.status, body:t }; }
+    }
+    async function jpost(url, body) {
+      const r = await fetch(url, {
+        method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken':token},
+        credentials:'same-origin', body: JSON.stringify(body)
+      });
+      const t = await r.text();
+      try { return JSON.parse(t); } catch { return { ok:false, status:r.status, body:t }; }
+    }
+    async function jpatch(url, body) {
+      const r = await fetch(url, {
+        method:'PATCH', headers:{'Content-Type':'application/json','X-CSRFToken':token},
+        credentials:'same-origin', body: JSON.stringify(body)
+      });
+      const t = await r.text();
+      try { return JSON.parse(t); } catch { return { ok:false, status:r.status, body:t }; }
+    }
+
+    async function loadDrivers() {
+      const res = await jget('/service/admin/drivers/');
+      if (res.ok) {
+        drivers = res.drivers || [];
+        const sel = $('#driver');
+        sel.innerHTML = '<option value="">-- choose driver --</option>' +
+          drivers.map(d => `<option value="${d.id}">${d.name}</option>`).join('');
+      }
+    }
+
+    function renderRows() {
+  tbody.innerHTML = '';
+  for (const e of entries) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${e.id}</td>
+      <td>${fmtTime(e.pickup_time)}</td>
+      <td>${e.client || ''}</td>
+      <td>${e.driver || ''}</td>
+      <td>${e.status || ''}</td>
+      <td class="row-actions">
+        <button data-act="reassign" data-id="${e.id}">Reassign</button>
+        <button data-act="pickup" data-id="${e.id}">Update Pickup</button>
+        <button data-act="cancel" data-id="${e.id}">Cancel</button>
+      </td>
+    `;
+    tbody.appendChild(tr);
+  }
+}
+
+
+    async function loadDay() {
+      const date = $('#date').value;
+      if (!date) return say('Pick a date.');
+      say('Loading…');
+      // ensure schedule row exists; returns schedule_id
+      const s = await jpost('/service/generate/schedule/', { date });
+      scheduleId = s.schedule_id;
+      const list = await jget(`/service/schedule/${scheduleId}/entries/`);
+      entries = list.entries || [];
+      renderRows();
+      say(`Loaded ${date} — ${list.count || 0} rows`);
+    }
+
+    // actions (delegate)
+    tbody.addEventListener('click', async (ev) => {
+      if (ev.target.tagName !== 'BUTTON') return;
+      const act = ev.target.dataset.act;
+      const id = +ev.target.dataset.id;
+      const row = entries.find(x => x.id === id);
+      if (!row) return;
+
+      if (act === 'reassign') {
+        const drvId = +($('#driver').value || 0);
+        if (!drvId) return say('Choose a driver first.');
+        const res = await jpost('/service/schedule-entry/reassign2/', { entry_id: id, driver_id: drvId });
+        say(`Reassign: ${res.ok ? 'OK' : (res.error || res.status)}`);
+        await loadDay();
+      }
+
+      if (act === 'time') {
+        const p = prompt('New pickup time (HH:MM):', (row.pickup_time||'').slice(0,5));
+        if (!p) return;
+        const d = prompt('New dropoff time (HH:MM):', (row.dropoff_time||'').slice(0,5));
+        const res = await jpatch(`/service/schedule-entry/${id}/update/`, { pickup_time: p, dropoff_time: d || null });
+        say(`Update time: ${res.ok ? 'OK' : (res.error || res.status)}`);
+        await loadDay();
+      }
+
+      if (act === 'cancel') {
+        if (!confirm('Cancel this stop?')) return;
+        const reason = prompt('Reason (optional):','');
+        const res = await jpost(`/service/schedule-entry/${id}/cancel/`, { reason });
+        say(`Cancel: ${res.ok ? 'OK' : (res.error || res.status)}`);
+        await loadDay();
+      }
+    });
+
+    // wiring
+    $('#load').addEventListener('click', (e) => { e.preventDefault(); loadDay(); });
+    (async () => {
+      await loadDrivers();
+      // default date = today for quick tests
+      const today = new Date().toISOString().slice(0,10);
+      $('#date').value = today;
+    })();
+  </script>
+  <script>
+  // --- helper to mm:ss format we already use ---
+  function mkTime(hh, mm) { return String(hh).padStart(2,'0') + ':' + String(mm).padStart(2,'0'); }
+
+  async function runSimulation() {
+    const date   = $('#date').value;
+    const count  = parseInt($('#sim-count').value || '0', 10);
+    const mode   = $('#sim-mode').value;
+    const useTpl = $('#sim-template').checked;
+    const startH = parseInt($('#sim-start').value || '7', 10);
+    const step   = parseInt($('#sim-interval').value || '15', 10);
+
+    if (!date) { say('Pick a date first.'); return; }
+    if (!count) { say('Enter number of stops > 0.'); return; }
+
+    say('Simulating…');
+
+    // 1) generate day (optionally from template)
+    const gen = await jpost('/service/generate/schedule/', {
+      date, from_template: !!useTpl, mode
+    });
+    if (!gen.schedule_id) { say('No schedule_id from generator'); console.log(gen); return; }
+    const scheduleId = gen.schedule_id;
+
+    // 2) drivers (use up to 6 for distribution)
+    const drv = await jget('/service/admin/drivers/');
+    let drivers = (drv.ok ? drv.drivers : []) || [];
+    if (drivers.length === 0) {
+      say('No drivers found.'); return;
+    }
+    drivers = drivers.slice(0, Math.min(6, drivers.length));
+
+    // 3) small address pools
+    const pickups = [
+      '123 Main St, Boston', '45 Broadway, Chelsea', '9 Salem St, Malden',
+      '10 Summer St, Somerville', '75 Cambridge St, Charlestown',
+      '15 Beacon St, Boston', '4 Dorchester Ave, Dorchester',
+      '21 Centre St, Jamaica Plain', '33 Western Ave, Cambridge',
+      '5 Highland Ave, Somerville'
+    ];
+    const dropoffs = [
+      '200 Care Center, Boston', '210 Care Center, Boston',
+      'East Clinic, Revere', 'North Rehab, Everett', 'South Medical, Dorchester'
+    ];
+    const clientName = (i) => `Client ${String(i+1).padStart(2,'0')}`;
+
+    // 4) create N stops at intervals, round-robin drivers
+    let hh = startH, mm = 0, created = 0;
+    for (let i = 0; i < count; i++) {
+      const d = drivers[i % drivers.length];
+      const start_time = mkTime(hh, mm);
+      mm += step; while (mm >= 60) { mm -= 60; hh += 1; }
+
+      const res = await jpost('/service/schedule-entry/create/', {
+        date,
+        client_name: clientName(i),
+        pickup_address: pickups[i % pickups.length],
+        dropoff_address: dropoffs[i % dropoffs.length],
+        start_time,
+        status: 'scheduled',
+        driver_id: d.id   // pickup only; end_time optional
+      });
+      if (res && res.entry) created++;
+    }
+    say(`Created ${created}/${count} stops`);
+
+    // 5) list rows
+    const list = await jget(`/service/schedule/${scheduleId}/entries/`);
+    entries = list.entries || [];
+    renderRows();
+
+    // 6) dispatch adjustments
+    const rows = entries.slice();
+    const reassignCount = Math.max(1, Math.floor(rows.length * 0.2));
+    const shiftCount    = Math.max(1, Math.floor(rows.length * 0.2));
+    const cancelCount   = Math.max(1, Math.floor(rows.length * 0.1));
+
+    // a) reassign ~20%
+    for (let i = 0; i < reassignCount; i++) {
+      const e = rows[i];
+      const alt = drivers.find(d => d.name !== e.driver);
+      if (!alt) continue;
+      await jpost('/service/schedule-entry/reassign2/', { entry_id: e.id, driver_id: alt.id });
+    }
+
+    // b) shift pickup +10m for ~20%
+    const plus = (t) => {
+      if (!t) return t;
+      const dt = new Date(`1970-01-01T${t}Z`);
+      dt.setUTCMinutes(dt.getUTCMinutes() + 10);
+      return mkTime(dt.getUTCHours(), dt.getUTCMinutes());
+    };
+    for (let i = reassignCount; i < reassignCount + shiftCount; i++) {
+      const e = rows[i];
+      if (!e?.pickup_time) continue;
+      await jpatch(`/service/schedule-entry/${e.id}/update/`, { pickup_time: plus(e.pickup_time) });
+    }
+
+    // c) cancel ~10%
+    for (let i = reassignCount + shiftCount; i < reassignCount + shiftCount + cancelCount; i++) {
+      const e = rows[i];
+      await jpost(`/service/schedule-entry/${e.id}/cancel/`, {}); // no reason
+    }
+
+    // d) progress first 3 rows
+    for (let i = 0; i < Math.min(3, rows.length); i++) {
+      const e = rows[i];
+      for (const s of ['en route','arrived','completed']) {
+        await jpostForm('/service/schedule-entry/status/', { entry_id: e.id, status: s });
+      }
+    }
+
+    // 7) refresh table
+    await loadDay();
+    say('Simulation complete.');
+  }
+
+  // wire buttons
+  $('#simulate').addEventListener('click', async (e) => { e.preventDefault(); await runSimulation(); });
+  $('#publish-day').addEventListener('click', async (e) => {
+    e.preventDefault();
+    const date = $('#date').value; if (!date) return say('Pick a date first.');
+    const res = await jpost('/service/schedule/set-status/', { date, status:'final' });
+    say(`Publish: ${res.ok ? 'OK' : (res.error || res.status)}`);
+  });
+</script>
+
+</body>
+</html>

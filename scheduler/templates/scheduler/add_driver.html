@@ -1,0 +1,17 @@
+{% extends 'scheduler/base.html' %}
+{% block content %}
+<h2>Add New Driver</h2>
+<form method="post" class="needs-validation" novalidate>
+  {% csrf_token %}
+  {% for field in form %}
+    <div class="mb-3">
+      <label class="form-label">{{ field.label }}</label>
+      {{ field }}
+      {% if field.errors %}
+        <div class="text-danger">{{ field.errors }}</div>
+      {% endif %}
+    </div>
+  {% endfor %}
+  <button type="submit" class="btn btn-success">Save Driver</button>
+</form>
+{% endblock %}

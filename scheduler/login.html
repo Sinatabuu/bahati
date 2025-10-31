@@ -1,0 +1,21 @@
+<!doctype html>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<h1>Sign in</h1>
+
+{% if messages %}
+  {% for m in messages %}
+    <p style="color:#b91c1c">{{ m }}</p>
+  {% endfor %}
+{% endif %}
+
+<form method="post" action="/service/login/">
+  {% csrf_token %}
+  <label>Username <input name="username" required></label><br>
+  <label>Password <input type="password" name="password" required></label><br>
+  {% if request.GET.next %}
+    <input type="hidden" name="next" value="{{ request.GET.next }}">
+  {% endif %}
+  <button type="submit">Log in</button>
+</form>
+
+<p style="margin-top:1rem"><a href="/">← Back</a></p>

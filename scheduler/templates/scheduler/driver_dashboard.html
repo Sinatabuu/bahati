@@ -1,0 +1,273 @@
+{% extends 'scheduler/base.html' %}
+{% load static %}
+
+{% block title %}Driver Dashboard · Bahati{% endblock %}
+
+{% block extra_head %}
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="anonymous">
+<style>
+  .wrap { display: grid; gap: 12px; }
+  .panel { background:#fff; border:1px solid #e5e7eb; border-radius:14px; box-shadow:0 1px 2px rgba(0,0,0,.04); }
+  .panel-h { padding:10px 12px; border-bottom:1px solid #eef2f7; display:flex; align-items:center; gap:10px; justify-content:space-between; }
+  .panel-b { padding:12px; }
+  .sticky-head { position:sticky; top:56px; z-index:5; background:#fff; border-bottom:1px dashed #e5e7eb; }
+  .h-controls { display:flex; gap:10px; align-items:center; }
+  .trips { display:flex; flex-direction:column; gap:10px; }
+  .trip { border:1px solid #e6e8ef; border-radius:12px; padding:12px; display:grid; gap:10px; }
+  .meta { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  .time { font-variant-numeric: tabular-nums; background:#0d1b2a; color:#fff; padding:4px 10px; border-radius:999px; font-weight:700; }
+  .status { border-radius:999px; padding:2px 8px; font-weight:700; font-size:.8rem; border:1px solid #e5e7eb; color:#374151; background:#eef2ff; text-transform:capitalize; }
+  .status.completed { background:#d1fae5; border-color:#bbf7d0; color:#065f46; }
+  .title { font-weight:800; font-size:1rem; color:#111827; }
+  .kv { display:grid; grid-template-columns: 18px 1fr; gap:8px; font-size:.96rem; }
+  .kv .i { text-align:center; color:#6b7280; }
+  .actions { display:flex; gap:8px; flex-wrap:wrap; }
+  .btn-big { padding:10px 14px; font-weight:700; border-radius:12px; border:1px solid #e5e7eb; background:#fff; min-height:42px; }
+  .btn-nav { background:#0d6efd; color:#fff; border-color:#0d6efd; }
+  .btn-complete { background:#0f766e; color:#fff; border-color:#0f766e; }
+  .hint { color:#6b7280; font-size:.85rem; }
+  #miniMap { height: 220px; border-radius:12px; border:1px solid #e5e7eb; }
+  @media (min-width: 768px) {
+    .wrap { grid-template-columns: minmax(0, 1fr) 360px; align-items:start; }
+    #miniMap { height: 380px; }
+  }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="container my-3">
+  <h2 class="h5 mb-2"><i class="fa-solid fa-steering-wheel"></i> Driver Dashboard</h2>
+
+  <div class="wrap" id="dd"
+       data-api="/service/api/schedule-entries/"
+       data-is-driver="{{ is_driver_user|yesno:'true,false' }}">
+
+    <!-- LEFT: trips -->
+    <section class="panel">
+      <div class="panel-h sticky-head">
+        <div class="h-controls">
+          <input id="d-date" type="date" class="form-control" />
+          <select id="d-driver" class="form-select">
+            <option value="">My trips</option>
+            <option value="all">All</option>
+          </select>
+          <button id="d-refresh" class="btn btn-dark">Refresh</button>
+        </div>
+        <a href="{% url 'root_home' %}" class="btn btn-outline-secondary">Dashboard</a>
+      </div>
+      <div class="panel-b">
+        <div id="trip-list" class="trips"></div>
+        <div id="empty" class="text-center text-muted py-4" style="display:none">
+          No trips for this date.
+        </div>
+      </div>
+    </section>
+
+    <!-- RIGHT: map -->
+    <section class="panel">
+      <div class="panel-h">
+        <strong><i class="fa-solid fa-map-location-dot"></i> Map</strong>
+        <small class="hint">Tap “Navigate” for turn-by-turn</small>
+      </div>
+      <div class="panel-b">
+        <div id="miniMap"></div>
+      </div>
+    </section>
+
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin="anonymous"></script>
+<script>
+(function(){
+  const root = document.getElementById('dd');
+  const API = root.getAttribute('data-api');
+  const IS_DRIVER_USER = root.getAttribute('data-is-driver') === 'true';
+
+  const elDate = document.getElementById('d-date');
+  const elRefresh = document.getElementById('d-refresh');
+  const elList = document.getElementById('trip-list');
+  const elEmpty = document.getElementById('empty');
+  const elDriver = document.getElementById('d-driver');
+
+  // 1) if it's a real driver, hide the driver dropdown (they only see theirs)
+  if (IS_DRIVER_USER && elDriver) {
+    elDriver.style.display = "none";
+  }
+
+  // Default date = today
+  const today = new Date();
+  elDate.value = today.toISOString().slice(0,10);
+
+  // Map
+  let map = L.map('miniMap', { scrollWheelZoom:true, tap:true });
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{ maxZoom:19, attribution:'&copy; OpenStreetMap' }).addTo(map);
+  let markers = [];
+  function clearMarkers(){ markers.forEach(m => m.remove()); markers = []; }
+  function addMarker(lat,lng,html){ try{ const mk=L.marker([lat,lng]).addTo(map).bindPopup(html||''); markers.push(mk); return mk; }catch(e){ return null; } }
+  function fitMarkers(){ if(!markers.length){ map.setView([42.3601,-71.0589], 9); return; } const g=L.featureGroup(markers); map.fitBounds(g.getBounds().pad(0.2), { animate:false }); }
+
+  function esc(s){ return (s ?? '').toString(); }
+  function mapsLinkByCoords(lat,lng){
+    if(lat && lng) return `https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}`;
+    return null;
+  }
+  function mapsLinkByQuery(addr, city){
+    const q = encodeURIComponent([addr, city].filter(Boolean).join(', '));
+    return `https://www.google.com/maps/search/?api=1&query=${q}`;
+  }
+
+  function cardHTML(e, idx){
+    const client = esc(e.client || e.client_name || '—');
+    const time = esc(e.time || e.start_time || '--:--');
+    const st = (esc(e.status || 'scheduled')).toLowerCase();
+    const puAddr = esc(e.pickup || e.pickup_address || '');
+    const puCity = esc(e.pickup_city || '');
+    const doAddr = esc(e.dropoff || e.dropoff_address || '');
+    const doCity = esc(e.dropoff_city || '');
+    const vehicle = esc(e.vehicle_name || e.vehicle || '');
+
+    const stClass = (st === 'completed' ? 'completed' : '');
+
+    const navUrl =
+      mapsLinkByCoords(e.pickup_lat, e.pickup_lng) ||
+      mapsLinkByQuery(puAddr || doAddr, puCity || doCity);
+
+    return `
+      <article class="trip" data-idx="${idx}" data-id="${e.id}">
+        <div class="meta">
+          <span class="time">${time}</span>
+          <span class="status ${stClass}">${st || 'scheduled'}</span>
+          ${vehicle ? `<span class="badge bg-light text-dark border">${vehicle}</span>` : ``}
+        </div>
+        <div class="title">${client}</div>
+        <div class="kv">
+          <div class="i"><i class="fa-solid fa-signs-post"></i></div>
+          <div><strong>Pickup:</strong> ${puAddr}${puCity ? `, ${puCity}` : ''}</div>
+          <div class="i"><i class="fa-solid fa-location-dot"></i></div>
+          <div><strong>Dropoff:</strong> ${doAddr}${doCity ? `, ${doCity}` : ''}</div>
+        </div>
+        <div class="actions">
+          <a class="btn-big btn-nav" href="${navUrl}" target="_blank" rel="noopener">Navigate</a>
+          <button class="btn-big btn-complete" data-action="completed">Mark complete</button>
+        </div>
+      </article>
+    `;
+  }
+
+  function render(entries){
+    elList.innerHTML = entries.map(cardHTML).join('');
+    elEmpty.style.display = entries.length ? 'none' : 'block';
+
+    clearMarkers();
+    for(const e of entries){
+      const lat = e.pickup_lat ?? e.lat ?? null;
+      const lng = e.pickup_lng ?? e.lng ?? null;
+      if (lat && lng) {
+        addMarker(lat, lng, `<strong>${esc(e.client || e.client_name || '')}</strong><br>${esc(e.pickup_address || '')}`);
+      }
+    }
+    fitMarkers();
+
+    // bind complete
+    elList.querySelectorAll('.trip').forEach((card,i)=>{
+      const btn = card.querySelector('[data-action="completed"]');
+      if (!btn) return;
+      const entryId = card.getAttribute('data-id');
+      btn.addEventListener('click', async ()=>{
+        btn.disabled = true;
+        try {
+          await updateStatus(entryId, "completed");
+          const st = card.querySelector('.status');
+          st.className = 'status completed';
+          st.textContent = 'completed';
+        } catch (e) {
+          alert(e.message || 'Update failed');
+        } finally {
+          btn.disabled = false;
+        }
+      });
+    });
+  }
+
+  async function fetchJSON(url){
+    try {
+      const r = await fetch(url, { credentials:'same-origin' });
+      const t = await r.text();
+      let data=null; 
+      try{ data=JSON.parse(t); } catch {
+        console.warn("Non-JSON from API:", t);
+      }
+      return { status:r.status, data, raw:t };
+    } catch(e){
+      console.error(e);
+      return { status:0, data:null, raw:String(e) };
+    }
+  }
+
+  async function updateStatus(entryId, status){
+    const resp = await fetch("/service/api/schedule/status/", {
+      method: "POST",
+      credentials: "include",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Requested-With": "XMLHttpRequest"
+      },
+      body: JSON.stringify({ entry_id: entryId, status })
+    });
+    const text = await resp.text();
+    let data = {};
+    try { data = JSON.parse(text); } catch (e) {
+      throw new Error("Server returned HTML for status update.");
+    }
+    if (!resp.ok || data.ok === false) {
+      throw new Error(data.error || "Status update failed");
+    }
+    return data;
+  }
+
+  async function load(){
+    const date = elDate.value;
+    // if driver → ask API to give only this driver
+    const driverFilter = elDriver && !IS_DRIVER_USER ? elDriver.value : "";
+    const meParam = IS_DRIVER_USER ? "&me=1" : "";
+    const { data } = await fetchJSON(`${API}?date=${encodeURIComponent(date)}${meParam}`);
+    let entries = (data && Array.isArray(data.entries) ? data.entries : []).map(e => ({
+      ...e,
+      client:  e.client || e.client_name,
+      vehicle: e.vehicle || e.vehicle_name,
+      time:    e.time || e.start_time,
+      status: (e.status || 'scheduled').toLowerCase(),
+    }));
+
+    // client-side driver filter (staff only)
+    if (!IS_DRIVER_USER && driverFilter && driverFilter !== "all") {
+      entries = entries.filter(e => (e.driver_name || "").toLowerCase() === driverFilter.toLowerCase());
+    }
+
+    // build staff dropdown only from entries (but don't rebuild for drivers)
+    if (!IS_DRIVER_USER && elDriver) {
+      const uniqueDrivers = Array.from(new Set(entries.map(e => e.driver_name).filter(Boolean)));
+      elDriver.innerHTML = `<option value="">My trips</option><option value="all">All</option>` +
+        uniqueDrivers.map(d => `<option value="${d}">${d}</option>`).join('');
+      // re-select the one user had chosen
+      if (driverFilter) {
+        elDriver.value = driverFilter;
+      }
+    }
+
+    render(entries);
+  }
+
+  elRefresh.addEventListener('click', load);
+  elDate.addEventListener('change', load);
+  if (elDriver) {
+    elDriver.addEventListener('change', load);
+  }
+
+  load();
+})();
+</script>
+{% endblock %}

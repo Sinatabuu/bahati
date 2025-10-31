@@ -1,0 +1,58 @@
+{% extends "scheduler/base.html" %}
+{% block title %}Print – {{ today|date:"Y-m-d" }}{% endblock %}
+{% block content %}
+<div class="container my-3">
+  <div class="d-print-none mb-3">
+    <button class="btn btn-secondary" onclick="window.print()">Print</button>
+  </div>
+  <h3 class="mb-2">Daily Schedule – {{ today|date:"l, M j, Y" }}</h3>
+  {% if entries %}
+  <table class="table table-sm table-bordered">
+    <thead class="table-light">
+      <tr>
+        <th style="width:100px">Time</th>
+        <th>Client</th>
+        <th>Pickup</th>
+        <th>Dropoff</th>
+        <th style="width:160px">Driver</th>
+        <th style="width:120px">Status</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for e in entries %}
+      <tr>
+        <td>{{ e.start_time|time:"H:i" }}</td>
+        <td>{{ e.client_name }}</td>
+        <td>{{ e.pickup_address }}</td>
+        <td>{{ e.dropoff_address }}</td>
+        <td>
+            {% if e.driver_id %}
+            {{ e.driver.name }}
+            {% else %}
+            <em>Unassigned</em>
+            {% endif %}
+        </td>
+
+        <td>{{ e.status|default:"scheduled"|title }}</td>
+
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+    <div class="alert alert-info">No entries for {{ today|date:"Y-m-d" }}.</div>
+  {% endif %}
+</div>
+
+<style>
+@media print {
+  .d-print-none { display: none !important; }
+  body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+}
+</style>
+<script> // optional auto-print
+  if (window.matchMedia && window.matchMedia('print').matches === false) {
+    setTimeout(()=>window.print(), 300);
+  }
+</script>
+{% endblock %}

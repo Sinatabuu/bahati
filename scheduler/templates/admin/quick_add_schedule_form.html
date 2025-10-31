@@ -1,0 +1,15 @@
+{% extends "admin/base_site.html" %}
+{% block content %}
+  <div class="module aligned">
+    <h1>{{ title }}</h1>
+    <form method="post">{% csrf_token %}
+      <fieldset class="module aligned">
+        {{ form.as_p }}
+      </fieldset>
+      <div class="submit-row">
+        <input type="submit" name="apply" value="Add to schedule" class="default">
+        <a href="{% url 'admin:scheduler_client_changelist' %}" class="button cancel-link">Cancel</a>
+      </div>
+    </form>
+  </div>
+{% endblock %}

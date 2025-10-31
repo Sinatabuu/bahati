@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Daily Dispatch Sheet</title>
+    <style>
+        body { font-family: 'Courier New', monospace; font-size: 12px; margin: 0.5in; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { border: 1px solid #000; padding: 6px; text-align: left; }
+        th { background-color: #f0f0f0; }
+        .driver-row { background-color: #e6f3ff; font-weight: bold; }
+        @media print {
+            .no-print { display: none; }
+        }
+    </style>
+</head>
+<body>
+
+<h1>BAHATI TRANSPORTATION SERVICES</h1>
+<h2>Daily Dispatch Sheet - {{ today|date:"M d, Y" }}</h2>
+
+<table>
+    <thead>
+        <tr>
+            <th>DRIVER</th>
+            <th>ID</th>
+            <th>DATE</th>
+            <th>CAR</th>
+            <th>PHONE</th>
+            <th>TIME</th>
+            <th>MEMBER</th>
+            <th>ADDRESS PICK</th>
+            <th>CITY PICK</th>
+            <th>DROP ADDRESS</th>
+            <th>DROP CITY</th>
+            <th>DISTANCE</th>
+            <th>NOTES</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for schedule in schedules %}
+        <tr>
+            <td>{{ schedule.driver.name }}</td>
+            <td>{{ schedule.client.logistiCare_id|default:"" }}</td>
+            <td>{{ schedule.date|date:"m/d/Y" }}</td>
+            <td>A</td>
+            <td>{{ schedule.driver.phone_number }}</td>
+            <td>{{ schedule.pickup_time|date:"H:i" }}</td>
+            <td>{{ schedule.client.name }}</td>
+            <td>{{ schedule.client.pickup_address }}</td>
+            <td>{{ schedule.client.pickup_city }}</td>
+            <td>{{ schedule.client.dropoff_address }}</td>
+            <td>{{ schedule.client.dropoff_city }}</td>
+            <td>{{ schedule.client.distance }}</td>
+            <td>{{ schedule.client.notes }}</td>
+        </tr>
+        {% empty %}
+        <tr>
+            <td colspan="13" class="text-center">No schedules for today.</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+
+<div class="no-print text-center mt-4">
+    <button onclick="window.print()" class="btn btn-primary">🖨️ Print Dispatch Sheet</button>
+    <a href="{% url 'scheduler:home' %}" class="btn btn-secondary">Back to Dashboard</a>
+</div>
+
+</body>
+</html>

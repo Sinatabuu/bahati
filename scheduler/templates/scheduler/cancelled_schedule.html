@@ -1,0 +1,38 @@
+{% extends 'scheduler/base.html' %}
+{% block title %}Cancelled Schedules{% endblock %}
+{% block content %}
+<div class="container mt-4">
+  <h2 class="mb-3">Cancelled Schedules</h2>
+
+  {% if schedules %}
+  <div class="table-responsive">
+    <table class="table table-striped table-hover align-middle">
+      <thead class="table-light">
+        <tr>
+          <th>Date</th>
+          <th>Driver</th>
+          <th>Client</th>
+          <th>Pickup</th>
+          <th>Dropoff</th>
+          <th>Pickup Time</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for s in schedules %}
+        <tr>
+          <td>{{ s.date }}</td>
+          <td>{{ s.driver.name|default:"—" }}</td>
+          <td>{{ s.client.name|default:"—" }}</td>
+          <td>{{ s.pickup_address }}, {{ s.pickup_city }}</td>
+          <td>{{ s.dropoff_address }}, {{ s.dropoff_city }}</td>
+          <td>{% if s.pickup_time %}{{ s.pickup_time|time:"g:i A" }}{% else %}—{% endif %}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="alert alert-info">No cancelled trips.</div>
+  {% endif %}
+</div>
+{% endblock %}
