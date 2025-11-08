@@ -3669,90 +3669,94 @@ def _first_nonempty(*vals):
             return s
     return ""
 
+def _parse_date_param(s):
+    return parse_date((s or "").strip()) or timezone.localdate()
 
-import os
-from urllib.parse import quote_plus
-from django.http import HttpResponse, JsonResponse
-from django.contrib import messages
-from django.shortcuts import render, redirect
+def _clean_label_token(s):
+    """Hide route codes and standalone time tokens from labels."""
+    s = (s or "").strip()
+    if not s:
+        return ""
+    if ROUTE_RE.match(s): return ""
+    if TIME_RE.match(s):  return ""
+    return s
+
+def _fmt_time(t):
+    if not t or not hasattr(t, "strftime"):
+        return "—"
+    try:    return t.strftime("%-I:%M %p")         # Linux/OSX
+    except: return t.strftime("%I:%M %p").lstrip("0")  # Windows
+
+def _join_addr(addr, city):
+    a = (addr or "").strip()
+    c = (city or "").strip()
+    if a and c: return f"{a}, {c}"
+    return a or c or ""
+
 from django.contrib.auth.decorators import login_required
+from django.views.decorators.csrf import ensure_csrf_cookie
+from django.shortcuts import render, redirect
+from django.contrib import messages
+from django.http import JsonResponse
 
-
-@login_required(login_url="/admin/login/")
+@ensure_csrf_cookie
+@login_required(login_url="scheduler:user_login")
 def driver_dashboard(request):
     from .models import Driver, ScheduleEntry
+    from urllib.parse import quote_plus
 
-    # -- DIAGNOSTIC: shows who the server thinks you are --
-    if request.GET.get("diag") == "1":
-        user = request.user
-        udriver = getattr(user, "driver", None)
-        return JsonResponse({
-            "authenticated": bool(user.is_authenticated),
-            "username": getattr(user, "username", None),
-            "is_staff": bool(getattr(user, "is_staff", False)),
-            "has_driver_relation": bool(udriver is not None),
-            "driver_id": getattr(udriver, "id", None),
-            "driver_name": getattr(udriver, "name", None),
-        })
-
-    # --- 0) PING: prove route+auth ---
-    if request.GET.get("ping") == "1":
-        return HttpResponse("DRIVER_DASH_OK", content_type="text/plain")
-
-    # --- 1) Inputs/identity ---
-    # inline, safe date parse (YYYY-MM-DD) → today on failure
-    from datetime import date, datetime
-    raw_day = request.GET.get("date")
-    try:
-        day = datetime.strptime(raw_day.strip(), "%Y-%m-%d").date() if raw_day else date.today()
-    except Exception:
-        day = date.today()
-
+    # -------- inputs / identity ----------
+    day = _parse_date_param(request.GET.get("date"))
     driver_id_param = request.GET.get("driver_id")
-    driver_name_param = (request.GET.get("driver") or "").strip()
+    driver_name_param = request.GET.get("driver")
 
     user = request.user
+    # IMPORTANT: your model uses related_name="driver", so use this:
     user_driver = getattr(user, "driver", None)
 
     show_all = False
     selected_driver = None
-    is_driver_user = False
+    is_driver_user = False   # <-- for template / JS
 
     if user.is_staff:
+        # Handle "all" explicitly
         if driver_id_param == "all":
             show_all = True
-        elif driver_id_param:
+            selected_driver = None
+
+        elif driver_id_param and driver_id_param != "":
+            # Try ID first
             try:
                 selected_driver = Driver.objects.get(pk=int(driver_id_param))
-            except Exception:
+                show_all = False
+            except (ValueError, Driver.DoesNotExist, TypeError):
                 selected_driver = None
+                # fall through to name or all
 
-        if not selected_driver and driver_name_param:
+        # If still no driver selected, try name
+        if not selected_driver and driver_name_param and driver_name_param.strip():
             selected_driver = (
                 Driver.objects
-                .filter(name__icontains=driver_name_param)
+                .filter(name__icontains=driver_name_param.strip())
                 .order_by("name")
                 .first()
             )
-            show_all = False if selected_driver else True
+            show_all = False  # only this driver
 
+        # Default: if no driver selected and not explicitly "all", show all
         if selected_driver is None and driver_id_param != "all":
             show_all = True
 
     else:
+        # NON-STAFF → must have a driver linked
         if not user_driver:
-            try:
-                messages.error(request, "❌ No driver profile linked to your account.")
-            except Exception:
-                pass
-            # send to login if no linked driver profile
-            return redirect("/admin/login/")
-        # user has a linked driver profile → proceed
+            messages.error(request, "❌ No driver profile linked to your account.")
+            return redirect("scheduler:user_login")
         selected_driver = user_driver
         show_all = False
-        is_driver_user = True
+        is_driver_user = True   # <-- tell template it's a driver
 
-    # --- 2) Data (kept minimal; no 500s) ---
+    # -------- queryset ----------
     qs = (
         ScheduleEntry.objects
         .select_related("schedule", "driver", "client")
@@ -3760,138 +3764,178 @@ def driver_dashboard(request):
         .order_by("driver__name", "start_time", "id")
     )
 
-    if not user.is_staff:
-        if not user_driver:
-            messages.error(request, "No driver profile linked to your account.")
-            return redirect("scheduler:user_login")  # or a friendly info page
-        qs = qs.filter(driver=user_driver)
-        show_all = False
-        selected_driver = user_driver
-        is_driver_user = True
+    if not show_all and selected_driver:
+        qs = qs.filter(driver=selected_driver)
+    # (if staff + show_all → leave qs as-is)
 
-    def _first_nonempty(*vals):
-        for v in vals:
-            if v and str(v).strip():
-                return v
-        return None
+    # -------- build trips ----------
+    trips = []
+    features = []
+    DEFAULT_LAT, DEFAULT_LNG = 42.3601, -71.0589
 
-    def _clean(v):
-        return v.strip() if isinstance(v, str) else v
-
-    def _join(addr, city):
-        if addr and city:
-            return f"{addr}, {city}"
-        return addr or city
-
-    trips, features = [], []
     for e in qs:
         c = getattr(e, "client", None)
-        client_label = _first_nonempty(getattr(e, "client_name", None), getattr(c, "name", None))
-        cu = (client_label or "").upper()
-        if (not e.id) or any(x in cu for x in ("PICK UP", "TIME NAME", "DRIVER ID", "ADDRESS PICK")):
+
+        client_label = _first_nonempty(
+            getattr(e, "client_name", None),
+            getattr(c, "name", None),
+        )
+
+        # guard against accidental header rows
+        cu = client_label.upper() if client_label else ""
+        if (
+            not e.id
+            or "PICK UP" in cu
+            or "TIME NAME" in cu
+            or "DRIVER ID" in cu
+            or "ADDRESS PICK" in cu
+        ):
             continue
 
-        pu_addr = _first_nonempty(_clean(getattr(e, "pickup_address", None)), getattr(c, "pickup_address", None))
-        pu_city = _first_nonempty(_clean(getattr(e, "pickup_city", None)), getattr(c, "pickup_city", None))
-        do_addr = _first_nonempty(_clean(getattr(e, "dropoff_address", None)), getattr(c, "dropoff_address", None))
-        do_city = _first_nonempty(_clean(getattr(e, "dropoff_city", None)), getattr(c, "dropoff_city", None))
+        # Resolve entry -> client -> empty
+        pu_addr = _first_nonempty(
+            _clean_label_token(getattr(e, "pickup_address", None)),
+            getattr(c, "pickup_address", None),
+        )
+        pu_city = _first_nonempty(
+            _clean_label_token(getattr(e, "pickup_city", None)),
+            getattr(c, "pickup_city", None),
+        )
+        do_addr = _first_nonempty(
+            _clean_label_token(getattr(e, "dropoff_address", None)),
+            getattr(c, "dropoff_address", None),
+        )
+        do_city = _first_nonempty(
+            _clean_label_token(getattr(e, "dropoff_city", None)),
+            getattr(c, "dropoff_city", None),
+        )
 
-        pu_label = _first_nonempty(_join(pu_addr, pu_city))
-        do_label = _first_nonempty(_join(do_addr, do_city))
+        pu_label = _first_nonempty(_join_addr(pu_addr, pu_city))
+        do_label = _first_nonempty(_join_addr(do_addr, do_city))
 
-        s_lat, s_lng = getattr(e, "pickup_latitude", None), getattr(e, "pickup_longitude", None)
-        e_lat, e_lng = getattr(e, "dropoff_latitude", None), getattr(e, "dropoff_longitude", None)
+        s_lat = getattr(e, "pickup_latitude", None)
+        s_lng = getattr(e, "pickup_longitude", None)
+        e_lat = getattr(e, "dropoff_latitude", None)
+        e_lng = getattr(e, "dropoff_longitude", None)
 
-        origin = f"{s_lat},{s_lng}" if (s_lat is not None and s_lng is not None) else (quote_plus(pu_label) if pu_label else None)
-        dest   = f"{e_lat},{e_lng}" if (e_lat is not None and e_lng is not None) else (quote_plus(do_label) if do_label else None)
-
+        # Maps deeplink
         maps_url = None
-        if origin and dest:
-            maps_url = f"https://www.google.com/maps/dir/?api=1&origin={origin}&destination={dest}"
-        elif dest:
-            maps_url = f"https://www.google.com/maps/dir/?api=1&destination={dest}"
-        elif origin:
-            maps_url = f"https://www.google.com/maps/dir/?api=1&destination={origin}"
+        if all(v is not None for v in (s_lat, s_lng, e_lat, e_lng)):
+            maps_url = (
+                "https://www.google.com/maps/dir/?api=1"
+                f"&origin={s_lat},{s_lng}&destination={e_lat},{e_lng}"
+            )
+        else:
+            origin = None
+            dest = None
+            if pu_label:
+                origin = quote_plus(pu_label)
+            if do_label:
+                dest = quote_plus(do_label)
+            if s_lat is not None and s_lng is not None:
+                origin = f"{s_lat},{s_lng}"
+            if e_lat is not None and e_lng is not None:
+                dest = f"{e_lat},{e_lng}"
+            if origin and dest:
+                maps_url = (
+                    "https://www.google.com/maps/dir/?api=1"
+                    f"&origin={origin}&destination={dest}"
+                )
+            elif dest:
+                maps_url = f"https://www.google.com/maps/dir/?api=1&destination={dest}"
+            elif origin:
+                maps_url = f"https://www.google.com/maps/dir/?api=1&destination={origin}"
 
+        # time formatting
         start_time = getattr(e, "start_time", None)
         time_str = "—"
-        if start_time and hasattr(start_time, "strftime"):
-            try:
-                time_str = start_time.strftime("%-I:%M %p")
-            except Exception:
-                time_str = start_time.strftime("%I:%M %p")
+        if start_time:
+            # if you deploy on Windows, use %I:%M %p instead of %-I
+            time_str = start_time.strftime("%-I:%M %p") if hasattr(start_time, "strftime") else "—"
 
-        trips.append({
-            "id": e.id,
-            "client": client_label or "—",
-            "driver": getattr(e.driver, "name", None),
-            "time_str": time_str,
-            "pickup_label": pu_label or "—",
-            "dropoff_label": do_label or "—",
-            "maps_url": maps_url,
-        })
+        trips.append(
+            {
+                "id": e.id,
+                "client": client_label or "—",
+                "driver": getattr(e.driver, "name", None),
+                "time": start_time,
+                "time_str": time_str,
+                "pickup_address": pu_addr,
+                "pickup_city": pu_city,
+                "dropoff_address": do_addr,
+                "dropoff_city": do_city,
+                "pickup_label": pu_label or "—",
+                "dropoff_label": do_label or "—",
+                "status": (getattr(e, "status", None) or "scheduled").lower(),
+                "start_lat": s_lat,
+                "start_lng": s_lng,
+                "end_lat": e_lat,
+                "end_lng": e_lng,
+                "maps_url": maps_url,
+            }
+        )
 
-    drivers = list(Driver.objects.order_by("name").values("id", "name")) if user.is_staff else []
-    driver_display_name = (
-        getattr(selected_driver, "name", None)
-        or (user.get_full_name() if hasattr(user, "get_full_name") else "")
-        or getattr(user, "username", "")
-        or "Driver"
-    )
+        # points for a static map (optional)
+        if s_lat is not None and s_lng is not None:
+            features.append(
+                {
+                    "type": "point",
+                    "trip_id": e.id,
+                    "coords": [float(s_lat), float(s_lng)],
+                    "label": f"{client_label} (PU)",
+                }
+            )
+        if e_lat is not None and e_lng is not None:
+            features.append(
+                {
+                    "type": "point",
+                    "trip_id": e.id,
+                    "coords": [float(e_lat), float(e_lng)],
+                    "label": f"{client_label} (DO)",
+                }
+            )
 
+    # staff dropdown
+    drivers = []
+    if user.is_staff:
+        drivers = list(Driver.objects.order_by("name").values("id", "name"))
+
+    # JSON mode (you already had this)
     if request.GET.get("format") == "json":
-        return JsonResponse({
-            "ok": True,
-            "date": day.isoformat(),
-            "show_all": show_all,
-            "driver": ({"id": selected_driver.id, "name": getattr(selected_driver, "name", None)} if selected_driver else None),
-            "drivers": drivers if user.is_staff else None,
-            "count": len(trips),
-            "trips": trips,
-            "entries": trips,
-            "driver_display_name": driver_display_name,
-        })
+        return JsonResponse(
+            {
+                "ok": True,
+                "date": day.isoformat(),
+                "show_all": show_all,
+                "driver": (
+                    {"id": selected_driver.id, "name": selected_driver.name}
+                    if selected_driver
+                    else None
+                ),
+                "drivers": drivers if user.is_staff else None,
+                "count": len(trips),
+                "trips": trips,
+                "is_driver_user": is_driver_user,
+            }
+        )
 
-    # --- 3) SAFE MODE: render a self-contained HTML (no base.html) ---
-    if os.environ.get("DRIVER_DASH_SAFE", "1") == "1":
-        rows = "\n".join(
-            f"<tr><td>{t['time_str']}</td><td>{t['client']}</td><td>{t['driver']}</td><td>{t['pickup_label']}</td><td>{t['dropoff_label']}</td></tr>"
-            for t in trips
-        ) or "<tr><td colspan='5'>No trips today.</td></tr>"
-        html = f"""<!doctype html><meta charset="utf-8">
-        <title>Driver Dashboard (Safe)</title>
-        <h1>Driver Dashboard — {driver_display_name}</h1>
-        <p>Date: {day}</p>
-        <p>Total trips: {len(trips)}</p>
-        <p><a href="?format=json">View JSON</a></p>
-        <table border="1" cellpadding="6" cellspacing="0">
-          <thead><tr><th>Time</th><th>Client</th><th>Driver</th><th>Pickup</th><th>Dropoff</th></tr></thead>
-          <tbody>{rows}</tbody>
-        </table>
-        """
-        return HttpResponse(html)
-
-    # --- 4) Normal template path (once safe mode is off) ---
     ctx = {
-        "selected_date": day, "day": day,
-        "show_all": show_all, "driver": selected_driver,
-        "drivers": drivers, "trips": trips, "entries": trips,
-        "DEFAULT_LAT": 42.3601, "DEFAULT_LNG": -71.0589,
+        "selected_date": day,
+        "show_all": show_all,
+        "driver": selected_driver,
+        "drivers": drivers,
+        "trips": trips,
+        "features": features,
+        "DEFAULT_LAT": 42.3601,
+        "DEFAULT_LNG": -71.0589,
+        # 👇 add this so template/JS can hide filters & call ?me=1
         "is_driver_user": is_driver_user,
-        "driver_display_name": driver_display_name,
     }
     return render(request, "scheduler/driver_dashboard.html", ctx)
 
 
-
-def _parse_date_param(s):
-    return parse_date((s or "").strip()) or timezone.localdate()
-
-def _fmt_time(t):
-    if not t or not hasattr(t, "strftime"):
-        return "—"
-    try:    return t.strftime("%-I:%M %p")         # Linux/OSX
-    except: return t.strftime("%I:%M %p").lstrip("0")  # Windows
+from django.db.models import Q
+from scheduler.models import Driver
 
 def _resolve_driver(order):
     """
@@ -5919,7 +5963,7 @@ def entry_swap_coords(request, pk: int):
         )
     # bounce back where we came from
     return HttpResponseRedirect(
-        request.META.get("HTTP_REFERER") or "/service/"
+        request.META.get("HTTP_REFERER") or reverse("scheduler:driver_dashboard")
     )
 
 
@@ -5938,7 +5982,7 @@ def bulk_swap_coords(request):
     if not day:
         messages.error(request, "Missing or invalid date.")
         return HttpResponseRedirect(
-            request.META.get("HTTP_REFERER") or "/service/"
+            request.META.get("HTTP_REFERER") or reverse("scheduler:driver_dashboard")
         )
 
     qs = ScheduleEntry.objects.filter(schedule__date=day)
@@ -5951,7 +5995,7 @@ def bulk_swap_coords(request):
             messages.error(request, "Invalid driver_id.")
             return HttpResponseRedirect(
                 request.META.get("HTTP_REFERER")
-                or "/service/"
+                or reverse("scheduler:driver_dashboard")
             )
 
     with transaction.atomic():
@@ -5974,7 +6018,7 @@ def bulk_swap_coords(request):
         request, f"Flipped coordinates on {count} entr{'y' if count==1 else 'ies'}."
     )
     return HttpResponseRedirect(
-        request.META.get("HTTP_REFERER") or "/service/"
+        request.META.get("HTTP_REFERER") or reverse("scheduler:driver_dashboard")
     )
 
 

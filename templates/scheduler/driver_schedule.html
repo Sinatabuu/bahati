@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>My Schedule — {{ today }}</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 16px; }
+    h1 { margin: 0 0 8px; }
+    .meta { color: #555; margin-bottom: 16px; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { border: 1px solid #ddd; padding: 8px; }
+    th { background: #f7f7f7; text-align: left; }
+    tr:nth-child(even) { background: #fafafa; }
+    .empty { color: #777; padding: 12px 0; }
+  </style>
+</head>
+<body>
+  <h1>My Schedule</h1>
+  <div class="meta">
+    <strong>Driver:</strong> {{ driver.name|default:request.user.username }} &nbsp;|&nbsp;
+    <strong>Date:</strong> {{ today }}
+  </div>
+
+  {% if schedules %}
+    <table>
+      <thead>
+        <tr>
+          <th>Pickup</th>
+          <th>Dropoff</th>
+          <th>Client</th>
+          <th>Phone</th>
+          <th>Pickup Address</th>
+          <th>Dropoff Address</th>
+          <th>Status</th>
+          <th>Map</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for s in schedules %}
+          <tr>
+            <td>{{ s.start_time|time:"H:i" }}</td>
+            <td>{{ s.end_time|time:"H:i" }}</td>
+            <td>{{ s.client_name }}</td>
+            <td>{{ s.pickup_address }}</td>
+            <td>{{ s.dropoff_address }}</td>
+            <td>{{ s.status }}</td>
+            <td>
+              {% if s.pickup_address %}
+                <a href="https://www.google.com/maps/search/?api=1&query={{ s.pickup_address|urlencode }}" target="_blank" rel="noopener">Open</a>
+              {% endif %}
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <div class="empty">No entries for this date.</div>
+  {% endif %}
+</body>
+</html>

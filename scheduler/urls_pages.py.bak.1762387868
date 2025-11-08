@@ -1,4 +1,3 @@
-from django.views.generic.base import RedirectView
 from django.urls import path
 from django.contrib.auth import views as auth_views
 from . import views
@@ -32,8 +31,7 @@ urlpatterns = [
     
 
     # Screens
-    path("driver-dashboard/", sviews.driver_dashboard, name="driver_dashboard"),
-    path("whoami/", sviews.whoami, name="whoami"),
+    path("driver-dashboard/",   sviews.driver_dashboard,        name="driver_dashboard"),
     path("generate/",           sviews.generate_schedule_view,  name="generate"),
     path("schedule-list/",      sviews.schedule_list,           name="schedule_list"),
     path("daily_schedule/",     sviews.daily_schedule_sheet,    name="daily_schedule_sheet"),
@@ -67,6 +65,8 @@ urlpatterns = [
 
     path("service/session-info/", sviews.session_info),
     path("service/set-session-probe/", sviews.set_session_probe),
+    path("service/whoami/", sviews.whoami),
+    path("service/driver-dashboard/", sviews.driver_dashboard, name="driver_dashboard"),
     
     path("csrf/", sviews.csrf_probe, name="csrf_probe"),
     path("schedule-entries/", sviews.schedule_entries_json, name="schedule_entries_json"),

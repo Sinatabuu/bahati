@@ -1,0 +1,82 @@
+{% extends "scheduler/base.html" %}
+{% block title %}Suspects · Bahati{% endblock %}
+
+{% block content %}
+<div class="container mt-4">
+  <h2 class="h4 mb-3">Suspect Entries</h2>
+
+  <form method="get" class="row g-2 align-items-end mb-3">
+    <div class="col-auto">
+      <label class="form-label">Date (optional)</label>
+      <input type="date" name="date" value="{{ today|date:'Y-m-d' }}" class="form-control">
+    </div>
+    <div class="col-auto">
+      <label class="form-label">Driver (optional)</label>
+      <select name="driver_id" class="form-select">
+        <option value="">— Any —</option>
+        {% for d in drivers %}
+          <option value="{{ d.id }}" {% if selected_driver_id == d.id %}selected{% endif %}>{{ d.name }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="col-auto">
+      <button class="btn btn-primary">Filter</button>
+      <a class="btn btn-outline-secondary" href="{% url 'scheduler:suspects_report' %}">Clear</a>
+    </div>
+  </form>
+
+  {% if entries %}
+  <div class="table-responsive">
+    <table class="table table-sm align-middle">
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>Date</th>
+          <th>Time</th>
+          <th>Driver</th>
+          <th>Client</th>
+          <th>PU (lat,lng)</th>
+          <th>DO (lat,lng)</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+      {% for e in entries %}
+        <tr>
+          <td>{{ e.id }}</td>
+          <td>{{ e.schedule.date|date:"Y-m-d" }}</td>
+          <td>{% if e.start_time %}{{ e.start_time|time:"H:i" }}{% endif %}</td>
+          <td>{{ e.driver.name|default:"—" }}</td>
+          <td>{{ e.client_name|default:"—" }}</td>
+          <td>
+            {% if e.start_latitude and e.start_longitude %}
+              {{ e.start_latitude }}, {{ e.start_longitude }}
+            {% else %}<span class="text-danger">—</span>{% endif %}
+          </td>
+          <td>
+            {% if e.end_latitude and e.end_longitude %}
+              {{ e.end_latitude }}, {{ e.end_longitude }}
+            {% else %}<span class="text-danger">—</span>{% endif %}
+          </td>
+          <td class="text-nowrap">
+            <form method="post" action="{% url 'scheduler:entry_swap_endpoints' e.id %}" class="d-inline">
+              {% csrf_token %}
+              <button class="btn btn-outline-warning btn-sm" title="Swap PU/DO">Swap</button>
+            </form>
+            <form method="post" action="{% url 'scheduler:entry_mark_reviewed' e.id %}" class="d-inline ms-1">
+              {% csrf_token %}
+              <button class="btn btn-outline-secondary btn-sm" title="Mark reviewed">Reviewed</button>
+            </form>
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+    <div class="alert alert-success">
+      No suspects found with the current filters.
+    </div>
+  {% endif %}
+</div>
+{% endblock %}

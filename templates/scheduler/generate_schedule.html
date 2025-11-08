@@ -1,0 +1,197 @@
+{% extends 'scheduler/base.html' %}
+
+{% block title %}Generate Daily Schedule{% endblock %}
+
+{% block content %}
+<div class="flex flex-col items-center justify-center min-h-[calc(100vh-64px)] p-6 bg-gray-50 font-sans">
+  <div class="w-full max-w-xl p-8 bg-white border border-gray-200 rounded-xl shadow-lg">
+    <h2 class="text-3xl font-bold text-gray-800 text-center mb-2">Generate Schedule</h2>
+    <p class="text-sm text-gray-500 text-center mb-6">
+      Select a date and click <strong>Generate</strong> to build today’s trips.
+    </p>
+
+    <form id="generate-form" class="space-y-5" autocomplete="off">
+      {% csrf_token %}
+
+      <input type="hidden" name="from_template" value="true">
+      <input type="hidden" name="use_learning" value="true">
+      <input type="hidden" name="mode" value="replace">
+      
+      <div>
+        <label for="date-input" class="block text-sm font-medium text-gray-700 mb-1">Date</label>
+        <input
+          type="date"
+          id="date-input"
+          name="date"
+          value="{{ today|date:'Y-m-d' }}"
+          class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md p-2"
+          required
+        />
+      </div>
+
+      <div>
+        <div class="block text-sm font-medium text-gray-700 mb-1">Mode</div>
+        <div class="grid grid-cols-1 sm:grid-cols-3 gap-2">
+          <label class="flex items-center gap-2 border rounded-md p-2 cursor-pointer">
+            <input type="radio" name="mode" value="replace" class="text-indigo-600" checked />
+            <span class="text-sm">Replace (fresh build)</span>
+          </label>
+          <label class="flex items-center gap-2 border rounded-md p-2 cursor-pointer">
+            <input type="radio" name="mode" value="append" class="text-indigo-600" />
+            <span class="text-sm">Append</span>
+          </label>
+          <label class="flex items-center gap-2 border rounded-md p-2 cursor-pointer">
+            <input type="radio" name="mode" value="sync" class="text-indigo-600" />
+            <span class="text-sm">Sync</span>
+          </label>
+        </div>
+      </div>
+
+      <div>
+        <div class="block text-sm font-medium text-gray-700 mb-1">Options</div>
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+          <label class="flex items-center gap-2 border rounded-md p-2 cursor-pointer">
+            <input type="checkbox" name="from_template" class="text-indigo-600" checked />
+            <span class="text-sm">From template</span>
+          </label>
+          <label class="flex items-center gap-2 border rounded-md p-2 cursor-pointer">
+            <input type="checkbox" name="use_learning" class="text-indigo-600" checked />
+            <span class="text-sm">Use learning</span>
+          </label>
+          <label class="flex items-center gap-2 border rounded-md p-2 cursor-pointer">
+            <input type="checkbox" name="auto_add_regulars" class="text-indigo-600" checked />
+            <span class="text-sm">Auto-add regulars</span>
+          </label>
+          <label class="flex items-center gap-2 border rounded-md p-2 cursor-pointer">
+            <input type="checkbox" name="balance_ties" class="text-indigo-600" checked />
+            <span class="text-sm">Balance drivers</span>
+          </label>
+        </div>
+
+        <label class="mt-2 flex items-center gap-2 border rounded-md p-2 cursor-pointer">
+          <input type="checkbox" name="force" class="text-indigo-600" />
+          <span class="text-sm">Force if schedule is final</span>
+        </label>
+      </div>
+
+      <div class="flex items-center gap-3">
+        <button
+          id="btn-generate"
+          type="submit"
+          class="flex-1 px-4 py-2 text-base font-medium rounded-md shadow-sm text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 transition-colors"
+        >
+          <span id="spin" class="hidden animate-spin mr-2 inline-block h-4 w-4 border-2 border-white border-t-transparent rounded-full align-middle"></span>
+          Generate
+        </button>
+        <a id="viewerLink" href="#" target="_blank" rel="noopener"
+           class="hidden px-4 py-2 text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 rounded-md text-sm">
+          Open viewer
+        </a>
+      </div>
+    </form>
+
+    <div id="status-message" class="mt-4 p-3 rounded-md hidden border-l-4">
+      <div id="message-content" class="text-sm"></div>
+    </div>
+
+    <pre id="result-json" class="mt-3 bg-gray-50 border rounded-md p-3 text-xs overflow-x-auto hidden"></pre>
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+  // CSRF from cookie or hidden input
+  function getCookie(n){const m=document.cookie.match('(^|;)\\s*'+n+'\\s*=\\s*([^;]+)');return m?m.pop():''}
+  function getCSRF(){
+    return getCookie('csrftoken') || document.querySelector('input[name=csrfmiddlewaretoken]')?.value || '';
+  }
+
+  const form = document.getElementById('generate-form');
+  const btn  = document.getElementById('btn-generate');
+  const spin = document.getElementById('spin');
+  const statusBox = document.getElementById('status-message');
+  const statusMsg = document.getElementById('message-content');
+  const resultPre = document.getElementById('result-json');
+  const viewerLink = document.getElementById('viewerLink');
+
+  function setStatus(ok, html){
+    statusBox.classList.remove('hidden','border-red-400','bg-red-50','border-green-400','bg-green-50');
+    statusBox.classList.add(ok ? 'border-green-400' : 'border-red-400', ok ? 'bg-green-50' : 'bg-red-50');
+    statusMsg.innerHTML = html;
+  }
+  function setBusy(b){
+    btn.disabled = b;
+    spin.classList.toggle('inline-block', b);
+    spin.classList.toggle('hidden', !b);
+    btn.classList.toggle('opacity-60', b);
+  }
+
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    setBusy(true);
+    setStatus(true, 'Generating...');
+    resultPre.classList.add('hidden');
+    viewerLink.classList.add('hidden');
+
+    // collect
+    const fd = new FormData(form);
+    const payload = {
+      date: fd.get('date'),
+      mode: fd.get('mode') || 'replace',
+      from_template: fd.get('from_template') === 'on',
+      use_learning: fd.get('use_learning') === 'on',
+      auto_add_regulars: fd.get('auto_add_regulars') === 'on',
+      balance_ties: fd.get('balance_ties') === 'on',
+      force: fd.get('force') === 'on'
+    };
+
+    try {
+      const res = await fetch('/service/generate/schedule/', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type':'application/json', 'X-CSRFToken': getCSRF() },
+        body: JSON.stringify(payload)
+      });
+
+      let data;
+      try {
+        data = await res.json();
+      } catch {
+        const text = await res.text();
+        throw new Error(`HTTP ${res.status}: ${text.slice(0,240)}…`);
+      }
+      if (!res.ok || data.ok === false) {
+        throw new Error(data.error || `HTTP ${res.status}`);
+      }
+
+      // success UI
+      const modeShown = (data.template && data.template.mode) || payload.mode;
+      setStatus(true, `✅ Generated for <strong>${data.date}</strong> (mode: <code>${modeShown}</code>)`);
+      const compact = {
+        schedule_id: data.schedule_id,
+        summary: data.summary || null,
+        template: data.template || null
+      };
+      resultPre.textContent = JSON.stringify(compact, null, 2);
+      resultPre.classList.remove('hidden');
+
+      // quick link to your viewer if you have it
+      const d = payload.date;
+      viewerLink.href = `/service/dev/schedule-viewer/?date=${encodeURIComponent(d)}`;
+      viewerLink.classList.remove('hidden');
+
+    } catch (err) {
+      setStatus(false, `❌ ${err.message}`);
+    } finally {
+      setBusy(false);
+    }
+  });
+
+  // default date to today if empty
+  (function ensureDateDefault(){
+    const el = document.getElementById('date-input');
+    if (!el.value) el.value = new Date().toISOString().slice(0,10);
+  })();
+</script>
+{% endblock %}

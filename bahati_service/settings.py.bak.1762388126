@@ -132,7 +132,7 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 # ------------------------ Auth redirects ------------------------
 LOGIN_URL = "scheduler:user_login"
-LOGIN_REDIRECT_URL = "/service/"
+LOGIN_REDIRECT_URL = "scheduler:home"
 LOGOUT_REDIRECT_URL = "scheduler:user_login"
 
 # ---------------------- Email (default) -------------------------

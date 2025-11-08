@@ -1,0 +1,23 @@
+<!doctype html>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<h1>Sign in</h1>
+
+{% if messages %}
+  {% for m in messages %}
+    <p style="color:#b91c1c">{{ m }}</p>
+  {% endfor %}
+{% endif %}
+
+<form method="post" action="{% url 'scheduler:user_login' %}">
+  {% csrf_token %}
+  <label>Username <input name="username" autocomplete="username" required></label>
+  <label>Password <input type="password" name="password" autocomplete="current-password" required></label>
+
+  <!-- Ensure next is absolute; default to dashboard -->
+  <input type="hidden" name="next" value="{{ next|default:'/service/driver-dashboard/' }}">
+  <button type="submit">Sign in</button>
+</form>
+
+
+<p style="margin-top:1rem"><a href="/service/driver-dashboard/">← Back</a></p>
+

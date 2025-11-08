@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Daily Schedule</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 1in; }
+    h1, h2 { text-align: center; }
+    table { width: 100%; border-collapse: collapse; margin: 20px 0; }
+    th, td { border: 1px solid #000; padding: 8px; text-align: left; }
+    .signature { margin-top: 50px; }
+    @media print {
+      .no-print { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <h1>BAHATI TRANSPORTATION SERVICES</h1>
+  <h2>Daily Schedule for {{ driver.name }} - {{ today|date:"F d, Y" }}</h2>
+
+  <table>
+    <thead>
+      <tr>
+        <th>Client Name</th>
+        <th>Pickup Address</th>
+        <th>Dropoff Address</th>
+        <th>Pickup Time</th>
+        <th>Notes</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for trip in trips %}
+      <tr>
+        <td>{{ trip.client.name }}</td>
+        <td>{{ trip.client.pickup_address }}, {{ trip.client.pickup_city }}</td>
+        <td>{{ trip.client.dropoff_address }}, {{ trip.client.dropoff_city }}</td>
+        <td>{{ trip.pickup_time|date:"g:i A" }}</td>
+        <td></td>
+      </tr>
+      {% empty %}
+      <tr><td colspan="5">No trips scheduled for today.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <div class="signature">
+    Driver Signature: _________________________
+  </div>
+  <p style="text-align: center; margin-top: 20px;">Thank You!</p>
+
+  <div class="no-print text-center mt-4">
+    <button onclick="window.print()" class="btn btn-primary">🖨️ Print Schedule</button>
+    <a href="{% url 'scheduler:home' %}" class="btn btn-secondary">Back to Dashboard</a>
+  </div>
+</body>
+</html>

@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>My Profile</title>
+    <style>
+        body { font-family: Arial, sans-serif; padding: 20px; background: #f8f9fa; }
+        .container { max-width: 600px; margin: 0 auto; background: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
+        h2 { text-align: center; color: #2c3e50; }
+        .profile-item { margin: 15px 0; }
+        .profile-item label { display: block; font-weight: bold; color: #34495e; }
+        .profile-item span { color: #2c3e50; }
+        .back-btn {
+            display: block; margin: 20px auto; text-align: center;
+            padding: 10px 20px; background: #6c757d; color: white;
+            text-decoration: none; border-radius: 5px; width: fit-content;
+        }
+        .back-btn:hover { background: #5a6268; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h2>👤 My Profile</h2>
+
+        {% if profile %}
+            <div class="profile-item">
+                <label>Username</label>
+                <span>{{ user.username }}</span>
+            </div>
+            <div class="profile-item">
+                <label>Name</label>
+                <span>{{ profile.driver.name }}</span>
+            </div>
+            <div class="profile-item">
+                <label>Phone</label>
+                <span>{{ profile.phone }}</span>
+            </div>
+            <div class="profile-item">
+                <label>Region</label>
+                <span>{{ profile.region }}</span>
+            </div>
+            <div class="profile-item">
+                <label>Email</label>
+                <span>{{ user.email }}</span>
+            </div>
+        {% else %}
+            <p>No profile information available.</p>
+        {% endif %}
+
+        <a href="{% url 'scheduler:home' %}" class="back-btn">← Back to Home</a>
+    </div>
+</body>
+</html>

@@ -1,0 +1,393 @@
+{% extends 'scheduler/base.html' %}
+{% load static %}
+
+{% block title %}Daily Schedule · Admin{% endblock %}
+
+{% block content %}
+<div class="container my-4">
+  <div class="bg-white border rounded-3 shadow-sm">
+    <!-- header -->
+    <div class="d-flex flex-wrap justify-content-between align-items-end gap-3 p-3 border-bottom">
+      <div>
+        <h2 class="h5 mb-1 d-flex align-items-center gap-2">
+          <i class="fa-solid fa-calendar-day text-primary"></i>
+          Admin Daily Schedule
+        </h2>
+        <p class="text-muted mb-0 small">View, filter, and reassign rides in one place.</p>
+      </div>
+      <div class="d-flex flex-wrap gap-2">
+        <div class="d-flex flex-column">
+          <label for="date-input" class="small text-muted mb-1">Date</label>
+          <input id="date-input" type="date" class="form-control form-control-sm" value="{{ default_date|date:'Y-m-d' }}">
+        </div>
+        <div class="d-flex flex-column">
+          <label for="driver-filter" class="small text-muted mb-1">Driver</label>
+          <select id="driver-filter" class="form-select form-select-sm">
+            <option value="">All drivers</option>
+          </select>
+        </div>
+        <div class="d-flex flex-column">
+          <label for="text-filter" class="small text-muted mb-1">Search</label>
+          <input id="text-filter" type="text" class="form-control form-control-sm" placeholder="Client, address…">
+        </div>
+        <div class="form-check d-flex align-items-center mt-4">
+          <input class="form-check-input me-1" type="checkbox" id="only-unassigned">
+          <label class="form-check-label small" for="only-unassigned">
+            Unassigned only
+          </label>
+        </div>
+        <button id="refresh-btn" class="btn btn-sm btn-primary mt-auto">
+          <i class="fa-solid fa-rotate"></i> Refresh
+        </button>
+      </div>
+    </div>
+
+    <!-- summary -->
+    <div id="summary" class="p-3 pt-2 small"></div>
+
+    <!-- table -->
+    <div class="table-responsive">
+      <table class="table table-sm align-middle mb-0" id="schedule-table">
+        <thead class="table-light">
+          <tr>
+            <th>Time</th>
+            <th>Client</th>
+            <th>Driver</th>
+            <th>Vehicle</th>
+            <th>Pickup</th>
+            <th>Pickup City</th>
+            <th>Dropoff</th>
+            <th>Dropoff City</th>
+            <th>Status</th>
+            <th style="width: 120px;">Actions</th>
+          </tr>
+        </thead>
+        <tbody id="rows"></tbody>
+      </table>
+      <div id="empty" class="text-center text-muted py-4" style="display:none">
+        No entries for this date.
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Reassign Modal -->
+<div class="modal fade" id="reassignModal" tabindex="-1" aria-labelledby="reassignModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header py-2">
+        <h5 class="modal-title" id="reassignModalLabel">Reassign schedule entry</h5>
+        <button type="button" class="btn-close btn-sm" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body py-3">
+        <p class="small mb-2" id="reassign-client-label"></p>
+        <div class="mb-2">
+          <label for="reassign-driver" class="form-label small mb-1">Assign to driver</label>
+          <select id="reassign-driver" class="form-select form-select-sm"></select>
+        </div>
+        <input type="hidden" id="reassign-entry-id" value="">
+      </div>
+      <div class="modal-footer py-2">
+        <button type="button" class="btn btn-sm btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-sm btn-primary" id="reassign-save">Save</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+{% endblock %}
+
+{% block extra_js %}
+<script>
+(function(){
+  const rowsEl = document.getElementById("rows");
+  const emptyEl = document.getElementById("empty");
+  const dateInput = document.getElementById("date-input");
+  const driverFilter = document.getElementById("driver-filter");
+  const textFilter = document.getElementById("text-filter");
+  const onlyUnassigned = document.getElementById("only-unassigned");
+  const refreshBtn = document.getElementById("refresh-btn");
+  const summaryEl = document.getElementById("summary");
+
+  // modal elements
+  const reassignModalEl = document.getElementById("reassignModal");
+  const reassignEntryIdEl = document.getElementById("reassign-entry-id");
+  const reassignDriverEl = document.getElementById("reassign-driver");
+  const reassignClientLabelEl = document.getElementById("reassign-client-label");
+  const reassignSaveBtn = document.getElementById("reassign-save");
+  const bsReassignModal = new bootstrap.Modal(reassignModalEl);
+
+  // in-memory cache
+  let cache = { entries: [], summary: { total: 0, unassigned: 0, by_driver: [] } };
+  // list of {id, name} for modal
+  let driverList = [];
+
+  function esc(s){ return (s ?? "").toString(); }
+
+  function aggByDriver(entries){
+    const m = new Map();
+    for (const e of entries){
+      const k = e.driver || "Unassigned";
+      m.set(k, (m.get(k) || 0) + 1);
+    }
+    return [...m.entries()].map(([driver, count]) => ({driver, count}));
+  }
+
+  function renderSummary(){
+    const s = cache.summary;
+    const chips = s.by_driver.map(d => `
+      <button class="btn btn-sm btn-outline-secondary me-2 mb-2" data-driver="${esc(d.driver)}">
+        ${esc(d.driver)} <span class="badge bg-light text-dark ms-1">${d.count}</span>
+      </button>
+    `).join("");
+    summaryEl.innerHTML = `
+      <div class="d-flex flex-wrap align-items-center gap-2">
+        <span><strong>Total:</strong> ${s.total}</span>
+        <span><strong>Unassigned:</strong> ${s.unassigned}</span>
+        <div class="d-flex flex-wrap">${chips}</div>
+      </div>
+    `;
+    summaryEl.querySelectorAll("button[data-driver]").forEach(btn => {
+      btn.addEventListener("click", () => {
+        driverFilter.value = btn.dataset.driver;
+        applyFilters();
+      });
+    });
+  }
+
+  function statusPill(status){
+    const st = (status || "scheduled").toLowerCase();
+    let cls = "badge bg-secondary-subtle text-secondary-emphasis";
+    if (st === "completed") cls = "badge bg-success-subtle text-success-emphasis";
+    else if (st === "arrived") cls = "badge bg-info-subtle text-info-emphasis";
+    else if (st === "cancelled") cls = "badge bg-danger-subtle text-danger-emphasis";
+    return `<span class="${cls} text-uppercase" style="font-size:.65rem">${st}</span>`;
+  }
+
+  function rowHTML(e){
+    return `
+      <tr>
+        <td class="text-monospace small">${esc(e.time)}</td>
+        <td>${esc(e.client)}</td>
+        <td>${e.driver ? esc(e.driver) : '<span class="text-danger small fw-semibold">Unassigned</span>'}</td>
+        <td>${esc(e.vehicle)}</td>
+        <td>${esc(e.pickup_addr)}</td>
+        <td>${esc(e.pickup_city)}</td>
+        <td>${esc(e.dropoff_addr)}</td>
+        <td>${esc(e.dropoff_city)}</td>
+        <td>${statusPill(e.status)}</td>
+        <td>
+          <button class="btn btn-sm btn-outline-primary mb-1" data-action="reassign" data-id="${e.id}" data-client="${esc(e.client)}">
+            <i class="fa-solid fa-right-left"></i>
+          </button>
+          <button class="btn btn-sm btn-outline-danger mb-1" data-action="cancel" data-id="${e.id}">
+            <i class="fa-solid fa-ban"></i>
+          </button>
+        </td>
+      </tr>
+    `;
+  }
+
+  function applyFilters(){
+    const d = (driverFilter.value || "").trim().toLowerCase();
+    const q = (textFilter.value || "").trim().toLowerCase();
+    const unassignedOnly = onlyUnassigned.checked;
+
+    rowsEl.innerHTML = "";
+    let shown = 0;
+
+    for (const e of cache.entries){
+      const drv = (e.driver || "").toLowerCase();
+      const hay = [
+        e.client, e.driver, e.vehicle,
+        e.pickup_addr, e.pickup_city,
+        e.dropoff_addr, e.dropoff_city,
+        e.status, e.time
+      ].join(" ").toLowerCase();
+
+      if (d && drv !== d) continue;
+      if (unassignedOnly && e.driver) continue;
+      if (q && !hay.includes(q)) continue;
+
+      rowsEl.insertAdjacentHTML("beforeend", rowHTML(e));
+      shown++;
+    }
+
+    emptyEl.style.display = shown ? "none" : "block";
+
+    // bind row buttons every time
+    rowsEl.querySelectorAll("[data-action='reassign']").forEach(btn => {
+      btn.addEventListener("click", () => openReassign(btn.dataset.id, btn.dataset.client));
+    });
+    rowsEl.querySelectorAll("[data-action='cancel']").forEach(btn => {
+      btn.addEventListener("click", () => doCancel(btn.dataset.id));
+    });
+  }
+
+  function openReassign(entryId, clientName){
+    reassignEntryIdEl.value = entryId;
+    reassignClientLabelEl.textContent = "Client: " + (clientName || "(unknown)");
+    // fill driver select from driverList
+    reassignDriverEl.innerHTML = "";
+    driverList.forEach(d => {
+      const opt = document.createElement("option");
+      opt.value = d.id;          // IMPORTANT: we use id here
+      opt.textContent = d.name;
+      reassignDriverEl.appendChild(opt);
+    });
+    bsReassignModal.show();
+  }
+
+  async function doCancel(entryId){
+  if (!entryId) {
+    alert("Missing entry id");
+    return;
+  }
+  if (!confirm("Cancel this trip?")) return;
+
+  const resp = await fetch("/service/api/schedule/cancel/", {
+    method: "POST",
+    credentials: "include",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Requested-With": "XMLHttpRequest"
+    },
+    body: JSON.stringify({ entry_id: entryId })
+  });
+
+  const text = await resp.text();
+  console.log("🔎 RAW CANCEL RESPONSE:", text);
+
+  let data = {};
+  try { data = JSON.parse(text); } catch (e) {
+    alert("Cancel failed: server returned HTML. Check console.");
+    return;
+  }
+
+  if (!resp.ok || data.ok === false) {
+    alert(data.error || "Cancel failed.");
+    return;
+  }
+
+  // refresh table
+  load();
+}
+
+
+  function getCSRF(){
+    const m = document.cookie.match('(^|;)\\s*csrftoken\\s*=\\s*([^;]+)');
+    return m ? m.pop() : "";
+  }
+
+  async function doReassignSubmit(){
+    const entryId = reassignEntryIdEl.value;
+    const driverId = reassignDriverEl.value;
+    if (!entryId || !driverId){
+      alert("Pick a driver.");
+      return;
+    }
+    try {
+      const r = await fetch("/service/api/schedule/reassign/", {
+        method: "POST",
+        credentials: "include",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Requested-With": "XMLHttpRequest",
+          "X-CSRFToken": getCSRF(),
+        },
+        body: JSON.stringify({
+          entry_id: entryId,
+          driver_id: driverId   // <---- MATCHES your view
+        })
+      });
+      const t = await r.text();
+      let data = {};
+      try { data = JSON.parse(t); } catch (e) {
+        // probably admin login HTML
+        throw new Error("Server returned HTML. Are you logged in as staff?");
+      }
+      if (!r.ok || data.ok === false){
+        // if your view returns candidates, show them
+        if (data.candidates){
+          alert((data.error || "Reassign failed") + "\\n" + data.candidates.map(c => `#${c.id} – ${c.name}`).join("\\n"));
+        } else {
+          alert(data.error || "Reassign failed");
+        }
+        return;
+      }
+      bsReassignModal.hide();
+      load();
+    } catch (err) {
+      alert("Reassign failed: " + err.message);
+    }
+  }
+
+  async function load(){
+    // default date
+    if (!dateInput.value){
+      const t = new Date();
+      dateInput.value = t.toISOString().slice(0,10);
+    }
+    const date = dateInput.value;
+    const resp = await fetch(`/service/api/schedule-entries/?date=${encodeURIComponent(date)}`, { credentials: "same-origin" });
+    const json = await resp.json();
+    if (!json.ok){
+      rowsEl.innerHTML = `<tr><td colspan="10" class="text-danger">API error: ${json.error || ""}</td></tr>`;
+      return;
+    }
+
+    const entries = (json.entries || []).map(e => ({
+      id: e.id,
+      time: e.start_time || "",
+      client: e.client_name || "",
+      driver: e.driver_name || "",
+      driver_id: e.driver_id || null,
+      vehicle: e.vehicle_name || "",
+      pickup_addr: e.pickup_address || "",
+      pickup_city: e.pickup_city || "",
+      dropoff_addr: e.dropoff_address || "",
+      dropoff_city: e.dropoff_city || "",
+      status: e.status || "scheduled"
+    }));
+
+    // build driver list from entries (unique by id)
+    const dmap = new Map();
+    entries.forEach(e => {
+      if (e.driver_id && e.driver){
+        dmap.set(e.driver_id, e.driver);
+      }
+    });
+    driverList = [...dmap.entries()].map(([id, name]) => ({id, name}));
+
+    // build dropdown
+    const by_driver = aggByDriver(entries);
+    driverFilter.innerHTML = `<option value="">All drivers</option>` +
+      by_driver.filter(d => d.driver !== "Unassigned")
+               .map(d => `<option value="${esc(d.driver)}">${esc(d.driver)} (${d.count})</option>`)
+               .join("");
+
+    cache = {
+      entries: entries,
+      summary: {
+        total: entries.length,
+        unassigned: entries.filter(e => !e.driver).length,
+        by_driver: by_driver
+      }
+    };
+
+    renderSummary();
+    applyFilters();
+  }
+
+  reassignSaveBtn.addEventListener("click", doReassignSubmit);
+  refreshBtn.addEventListener("click", load);
+  dateInput.addEventListener("change", load);
+  driverFilter.addEventListener("change", applyFilters);
+  textFilter.addEventListener("input", applyFilters);
+  onlyUnassigned.addEventListener("change", applyFilters);
+
+  // initial
+  load();
+})();
+</script>
+{% endblock %}

@@ -1,0 +1,104 @@
+{% extends "scheduler/base.html" %}
+{% load static %}
+
+{% block title %}Schedules · Bahati{% endblock %}
+
+{% block content %}
+<div class="container mt-4">
+  <h2 class="h4 mb-1"><i class="fa-solid fa-list"></i> Today’s Schedules</h2>
+  <p class="text-muted small mb-3">Trips for {{ filter_date|date:"M d, Y" }}{% if had_filters %} · filters applied{% endif %}</p>
+
+  <form method="get" class="row g-2 align-items-end mb-3">
+  <div class="col-auto">
+    <label class="form-label">Date</label>
+    <input type="date" name="date" class="form-control"
+           value="{{ filter_date|date:'Y-m-d' }}">
+  </div>
+
+  <div class="col-auto">
+    <label class="form-label">Driver</label>
+    <input type="text" name="driver" class="form-control"
+           placeholder="Name or ID"
+           value="{{ filter_driver }}">
+  </div>
+
+  <div class="col-auto">
+    <label class="form-label">Status</label>
+    <select name="status" class="form-select">
+      <option value="">All</option>
+      {% for s in status_choices %}
+        <option value="{{ s }}" {% if filter_status == s %}selected{% endif %}>
+          {{ s|title }}
+        </option>
+      {% endfor %}
+    </select>
+  </div>
+
+  <div class="col-auto form-check mt-4">
+    <input class="form-check-input" type="checkbox" id="unonly"
+           name="unassigned_only"
+           {% if request.GET.unassigned_only in '1,true,yes' %}checked{% endif %}>
+    <label class="form-check-label" for="unonly">Unassigned only</label>
+  </div>
+
+  <div class="col-auto mt-4">
+    <button class="btn btn-primary">Apply</button>
+    <a class="btn btn-outline-secondary" href="?date={{ filter_date|date:'Y-m-d' }}">Reset</a>
+  </div>
+</form>
+
+
+  {% if rows %}
+    <div class="table-responsive">
+      <table class="table table-striped table-hover align-middle">
+        <caption class="text-muted">Total: {{ rows|length }}</caption>
+        <thead class="table-dark">
+          <tr>
+            <th scope="col" style="white-space:nowrap;">Date</th>
+            <th scope="col">Client</th>
+            <th scope="col">Driver</th>
+            <th scope="col" class="w-25">Pickup</th>
+            <th scope="col" class="w-25">Dropoff</th>
+            <th scope="col" style="white-space:nowrap;">Time</th>
+            <th scope="col">Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for r in rows %}
+            <tr>
+              <td style="white-space:nowrap;">{{ r.date|date:"M d" }}</td>
+              <td>{{ r.client|default:"—" }}</td>
+              <td>{{ r.driver|default:"—" }}</td>
+
+              <!-- truncate long addresses but keep full text in title -->
+              <td class="text-truncate" style="max-width: 28ch;" title="{{ r.pickup }}">{{ r.pickup|default:"—" }}</td>
+              <td class="text-truncate" style="max-width: 28ch;" title="{{ r.dropoff }}">{{ r.dropoff|default:"—" }}</td>
+
+              <td style="white-space:nowrap;">{{ r.time|default:"—" }}</td>
+              <td>
+                <span class="badge
+                  {% if r.status == 'completed' %} bg-success
+                  {% elif r.status == 'arrived' %} bg-info
+                  {% elif r.status == 'en route' %} bg-warning text-dark
+                  {% elif r.status == 'cancelled' %} bg-danger
+                  {% elif r.status == 'planned' %} bg-secondary
+                  {% else %} bg-secondary {% endif %}">
+                  {{ r.status|title }}
+                </span>
+                {% if r.fused %}
+                  <span class="badge bg-warning text-dark ms-1" title="Multiple trips detected in a single field.">fused</span>
+                {% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% else %}
+    <div class="alert alert-info">
+      <i class="fa-solid fa-circle-info"></i>
+      No schedules for {{ filter_date|date:"Y-m-d" }}.
+    </div>
+  {% endif %}
+</div>
+{% endblock %}
