@@ -90,7 +90,6 @@
 
 {% block extra_js %}
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin="anonymous"></script>
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin="anonymous"></script>
 <script>
 (function(){
   const root = document.getElementById('dd');
@@ -126,33 +125,47 @@
   }
   const CSRF = getCookie('csrftoken');
 
-  function mapsLinkByCoords(lat,lng){
-    if(lat && lng) return `https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}`;
-    return null;
+  // === NEW dual-destination helpers (current location → pickup / dropoff) ===
+  function makeDestFromCoordsOrAddr(lat, lng, addr, city){
+    if (lat && lng) return `${lat},${lng}`;
+    const q = [addr, city].filter(Boolean).join(', ').trim();
+    return q ? encodeURIComponent(q) : null;
   }
-  function mapsLinkByQuery(addr, city){
-    const q = encodeURIComponent([addr, city].filter(Boolean).join(', '));
-    return `https://www.google.com/maps/search/?api=1&query=${q}`;
+
+  function pickupNavUrl(e){
+    const lat  = first(e.pickup_lat, e.pickupLatitude, e.start_lat, e.pickup_latitude, e.pickup_latitude);
+    const lng  = first(e.pickup_lng, e.pickupLongitude, e.start_lng, e.pickup_longitude, e.pickup_longitude);
+    const addr = first(e.pickup_label, e.pickup, e.pickup_address);
+    const city = first(e.pickup_city);
+    const dest = makeDestFromCoordsOrAddr(lat, lng, addr, city);
+    return dest ? `https://www.google.com/maps/dir/?api=1&destination=${dest}` : null;
+  }
+
+  function dropoffNavUrl(e){
+    const lat  = first(e.dropoff_lat, e.dropoffLatitude, e.end_lat, e.dropoff_latitude, e.dropoff_latitude);
+    const lng  = first(e.dropoff_lng, e.dropoffLongitude, e.end_lng, e.dropoff_longitude, e.dropoff_longitude);
+    const addr = first(e.dropoff_label, e.dropoff, e.dropoff_address);
+    const city = first(e.dropoff_city);
+    const dest = makeDestFromCoordsOrAddr(lat, lng, addr, city);
+    return dest ? `https://www.google.com/maps/dir/?api=1&destination=${dest}` : null;
   }
 
   function cardHTML(e){
     const client = esc(e.client || e.client_name || '—');
-    const time = esc(e.time || e.start_time || '--:--');
-    const st = (esc(e.status || 'scheduled')).toLowerCase();
-    const puAddr = esc(e.pickup || e.pickup_address || '');
-    const puCity = esc(e.pickup_city || '');
-    const doAddr = esc(e.dropoff || e.dropoff_address || '');
-    const doCity = esc(e.dropoff_city || '');
+    const time   = esc(e.time || e.time_str || e.start_time || '--:--');
+    const st     = (esc(e.status || 'scheduled')).toLowerCase();
     const vehicle = esc(e.vehicle_name || e.vehicle || '');
+
+    const puAddr = esc(first(e.pickup_label, e.pickup, e.pickup_address) || '');
+    const puCity = esc(e.pickup_city || '');
+    const doAddr = esc(first(e.dropoff_label, e.dropoff, e.dropoff_address) || '');
+    const doCity = esc(e.dropoff_city || '');
 
     const stClass = (st === 'completed' ? 'completed' : '');
 
-    const navUrl =
-      mapsLinkByCoords(
-        first(e.pickup_lat, e.pickupLatitude, e.start_lat, e.pickup_latitude),
-        first(e.pickup_lng, e.pickupLongitude, e.start_lng, e.pickup_longitude)
-      )
-      || mapsLinkByQuery(puAddr || doAddr, puCity || doCity);
+    // NEW: separate nav buttons
+    const navPickup  = pickupNavUrl(e);
+    const navDropoff = dropoffNavUrl(e);
 
     return `
       <article class="trip" data-id="${e.id}">
@@ -161,15 +174,36 @@
           <span class="status ${stClass}">${st || 'scheduled'}</span>
           ${vehicle ? `<span class="badge bg-light text-dark border">${vehicle}</span>` : ``}
         </div>
+
         <div class="title">${client}</div>
+
         <div class="kv">
           <div class="i"><i class="fa-solid fa-signs-post"></i></div>
-          <div><strong>Pickup:</strong> ${puAddr}${puCity ? `, ${puCity}` : ''}</div>
+          <div>
+            <strong>Pickup:</strong> ${puAddr}${puCity ? `, ${puCity}` : ''}
+            <div class="actions" style="margin-top:8px">
+              ${
+                navPickup
+                  ? `<a class="btn-big btn-nav" href="${navPickup}" target="_blank" rel="noopener">Navigate to Pickup</a>`
+                  : `<button class="btn-big" disabled>Pickup N/A</button>`
+              }
+            </div>
+          </div>
+
           <div class="i"><i class="fa-solid fa-location-dot"></i></div>
-          <div><strong>Dropoff:</strong> ${doAddr}${doCity ? `, ${doCity}` : ''}</div>
+          <div>
+            <strong>Dropoff:</strong> ${doAddr}${doCity ? `, ${doCity}` : ''}
+            <div class="actions" style="margin-top:8px">
+              ${
+                navDropoff
+                  ? `<a class="btn-big btn-nav" href="${navDropoff}" target="_blank" rel="noopener">Navigate to Dropoff</a>`
+                  : `<button class="btn-big" disabled>Dropoff N/A</button>`
+              }
+            </div>
+          </div>
         </div>
-        <div class="actions">
-          <a class="btn-big btn-nav" href="${navUrl}" target="_blank" rel="noopener">Navigate</a>
+
+        <div class="actions" style="margin-top:6px">
           <button class="btn-big btn-complete" data-action="completed">Mark complete</button>
         </div>
       </article>
@@ -182,9 +216,9 @@
 
     clearMarkers();
     for (const e of entries){
-      const lat = first(e.pickup_lat, e.pickupLatitude, e.start_lat, e.pickup_latitude);
-      const lng = first(e.pickup_lng, e.pickupLongitude, e.start_lng, e.pickup_longitude);
-      if (lat && lng) addMarker(lat, lng, `<strong>${esc(e.client || e.client_name || '')}</strong><br>${esc(e.pickup_address || '')}`);
+      const lat = first(e.pickup_lat, e.pickupLatitude, e.start_lat, e.pickup_latitude, e.pickup_latitude);
+      const lng = first(e.pickup_lng, e.pickupLongitude, e.start_lng, e.pickup_longitude, e.pickup_longitude);
+      if (lat && lng) addMarker(lat, lng, `<strong>${esc(e.client || e.client_name || '')}</strong><br>${esc(e.pickup_address || e.pickup_label || '')}`);
     }
     fitMarkers();
 
@@ -213,7 +247,7 @@
     try {
       const r = await fetch(url, { credentials:'same-origin' });
       const t = await r.text();
-      let data=null; 
+      let data=null;
       try{ data=JSON.parse(t); } catch { console.warn("Non-JSON from API:", t); }
       return { status:r.status, data, raw:t };
     } catch(e){
@@ -253,7 +287,7 @@
       ...e,
       client:  e.client || e.client_name,
       vehicle: e.vehicle || e.vehicle_name,
-      time:    e.time || e.start_time,
+      time:    e.time || e.time_str || e.start_time,
       status: (e.status || 'scheduled').toLowerCase(),
     }));
     render(entries);
@@ -263,5 +297,4 @@
   load();
 })();
 </script>
-
 {% endblock %}

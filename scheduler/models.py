@@ -214,7 +214,14 @@ class ScheduleEntry(TimeStampedModel, SoftDeleteModel):
     client   = models.ForeignKey(Client,  null=True, blank=True, on_delete=models.SET_NULL, related_name="entries")
 
     # freeze some human-readable client info for the day
-    client_name = models.CharField(max_length=200, blank=True)
+    client = models.ForeignKey('Client', null=True, blank=True, on_delete=models.SET_NULL)
+    client_name = models.CharField(max_length=255, blank=True, default='')
+
+    def save(self, *args, **kwargs):
+        if self.client:
+            # always mirror the real name
+            self.client_name = self.client.name
+        super().save(*args, **kwargs)
 
     # planned time windows
     start_time = models.TimeField(null=True, blank=True, db_index=True)
@@ -371,6 +378,13 @@ class ScheduleTemplateEntry(models.Model):
     driver_name = models.CharField(max_length=200, blank=True)
     vehicle_name = models.CharField(max_length=200, blank=True)
 
+
+
+    def save(self, *args, **kwargs):
+        if self.client:
+            # always mirror the real name
+            self.client_name = self.client.name
+        super().save(*args, **kwargs)
     # When this trip usually starts (time-of-day)
     start_time = models.TimeField(null=True, blank=True)
 

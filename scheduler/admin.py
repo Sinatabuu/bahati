@@ -326,6 +326,7 @@ class ScheduleTemplateAdmin(admin.ModelAdmin):
 @admin.register(ScheduleTemplateEntry)
 class ScheduleTemplateEntryAdmin(admin.ModelAdmin):
     # Only include fields that exist on the model
+    readonly_fields = ('client_name',)
     base_list = [
         'id', 'template', 'order', 'client_name', 'client', 'driver', 'vehicle', 'start_time',
         'pickup_address', 'dropoff_address'
@@ -353,24 +354,46 @@ def _existing_fields(model, names):
 
 # --- optional server-side autofill mixin (fills blanks from client defaults) ---
 class _EntryAutofillMixin:
+    """
+    Mixin for cleaning methods to automatically sync and fill
+    client-related fields based on the selected client object.
+    """
     def clean(self):
         cleaned = super().clean()
-        Client = apps.get_model("scheduler", "Client")
         client = cleaned.get("client")
-        if client and isinstance(client, Client):
-            def _set(field, attrs):
-                if field in self.fields and not cleaned.get(field):
-                    for a in attrs:
-                        v = getattr(client, a, "") or ""
-                        if v:
-                            cleaned[field] = v
+        
+        # --- 1. Client Name Sync Logic ---
+        client_name = (cleaned.get("client_name") or "").strip()
+        
+        if client and client_name and client.name.strip() != client_name:
+            # Case 1: Client selected, name mismatch -> Force sync
+            cleaned["client_name"] = client.name
+        elif client and not client_name:
+            # Case 2: Client selected, name field empty -> Autofill
+            cleaned["client_name"] = client.name
+
+        # --- 2. Address Autofill Logic ---
+        if client:
+            
+            # Helper function to find and set the value from client defaults
+            def _set(field_name: str, client_attrs: list):
+                """Sets the cleaned[field_name] from the first non-empty attribute in client_attrs."""
+                # Only autofill if the field is currently empty in the form
+                if not cleaned.get(field_name):
+                    for attr in client_attrs:
+                        value = getattr(client, attr, None)
+                        if value:
+                            cleaned[field_name] = value
                             break
+
+            # Apply autofill logic for addresses and cities/states
             _set("pickup_address",  ["default_pickup_address", "pickup_address"])
             _set("pickup_city",     ["pickup_city"])
             _set("pickup_state",    ["pickup_state"])
             _set("dropoff_address", ["default_dropoff_address", "dropoff_address"])
             _set("dropoff_city",    ["dropoff_city"])
             _set("dropoff_state",   ["dropoff_state"])
+
         return cleaned
 
 # --- ScheduleEntry admin (NEW) ---

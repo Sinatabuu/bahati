@@ -3670,13 +3670,12 @@ def _first_nonempty(*vals):
     return ""
 
 
-import os
-from urllib.parse import quote_plus
-from django.http import HttpResponse, JsonResponse
-from django.contrib import messages
-from django.shortcuts import render, redirect
 from django.contrib.auth.decorators import login_required
-
+from django.http import HttpResponse, JsonResponse
+from django.shortcuts import render, redirect
+from django.contrib import messages
+from urllib.parse import quote_plus
+import os
 
 @login_required(login_url="/admin/login/")
 def driver_dashboard(request):
@@ -3745,7 +3744,7 @@ def driver_dashboard(request):
                 messages.error(request, "❌ No driver profile linked to your account.")
             except Exception:
                 pass
-            # send to login if no linked driver profile
+        # send to login if no linked driver profile
             return redirect("/admin/login/")
         # user has a linked driver profile → proceed
         selected_driver = user_driver
@@ -3763,7 +3762,7 @@ def driver_dashboard(request):
     if not user.is_staff:
         if not user_driver:
             messages.error(request, "No driver profile linked to your account.")
-            return redirect("scheduler:user_login")  # or a friendly info page
+            return redirect("scheduler:user_login")
         qs = qs.filter(driver=user_driver)
         show_all = False
         selected_driver = user_driver
@@ -3783,14 +3782,24 @@ def driver_dashboard(request):
             return f"{addr}, {city}"
         return addr or city
 
+    def _q_from_coord_or_label(lat, lng, label):
+        """
+        Build a Google Maps-friendly token (lat,lng or URL-encoded label).
+        """
+        if lat is not None and lng is not None:
+            return f"{lat},{lng}"
+        return quote_plus(label) if label else None
+
     trips, features = [], []
     for e in qs:
         c = getattr(e, "client", None)
         client_label = _first_nonempty(getattr(e, "client_name", None), getattr(c, "name", None))
         cu = (client_label or "").upper()
+        # Skip header-like garbage rows
         if (not e.id) or any(x in cu for x in ("PICK UP", "TIME NAME", "DRIVER ID", "ADDRESS PICK")):
             continue
 
+        # Resolve pickup/dropoff labels
         pu_addr = _first_nonempty(_clean(getattr(e, "pickup_address", None)), getattr(c, "pickup_address", None))
         pu_city = _first_nonempty(_clean(getattr(e, "pickup_city", None)), getattr(c, "pickup_city", None))
         do_addr = _first_nonempty(_clean(getattr(e, "dropoff_address", None)), getattr(c, "dropoff_address", None))
@@ -3799,20 +3808,25 @@ def driver_dashboard(request):
         pu_label = _first_nonempty(_join(pu_addr, pu_city))
         do_label = _first_nonempty(_join(do_addr, do_city))
 
+        # Coordinates
         s_lat, s_lng = getattr(e, "pickup_latitude", None), getattr(e, "pickup_longitude", None)
         e_lat, e_lng = getattr(e, "dropoff_latitude", None), getattr(e, "dropoff_longitude", None)
 
-        origin = f"{s_lat},{s_lng}" if (s_lat is not None and s_lng is not None) else (quote_plus(pu_label) if pu_label else None)
-        dest   = f"{e_lat},{e_lng}" if (e_lat is not None and e_lng is not None) else (quote_plus(do_label) if do_label else None)
+        # URL tokens (destination only → device uses current location)
+        pickup_q  = _q_from_coord_or_label(s_lat, s_lng, pu_label)
+        dropoff_q = _q_from_coord_or_label(e_lat, e_lng, do_label)
 
-        maps_url = None
-        if origin and dest:
-            maps_url = f"https://www.google.com/maps/dir/?api=1&origin={origin}&destination={dest}"
-        elif dest:
-            maps_url = f"https://www.google.com/maps/dir/?api=1&destination={dest}"
-        elif origin:
-            maps_url = f"https://www.google.com/maps/dir/?api=1&destination={origin}"
+        # One-tap nav links
+        nav_pickup_url  = f"https://www.google.com/maps/dir/?api=1&destination={pickup_q}"  if pickup_q  else None
+        nav_dropoff_url = f"https://www.google.com/maps/dir/?api=1&destination={dropoff_q}" if dropoff_q else None
 
+        # Full route (optional): pickup → dropoff (kept for compatibility / optional UI)
+        route_url = (
+            f"https://www.google.com/maps/dir/?api=1&origin={pickup_q}&destination={dropoff_q}"
+            if (pickup_q and dropoff_q) else None
+        )
+
+        # Time label
         start_time = getattr(e, "start_time", None)
         time_str = "—"
         if start_time and hasattr(start_time, "strftime"):
@@ -3828,7 +3842,15 @@ def driver_dashboard(request):
             "time_str": time_str,
             "pickup_label": pu_label or "—",
             "dropoff_label": do_label or "—",
-            "maps_url": maps_url,
+            "maps_url": route_url,               # backward compatibility
+            "nav_pickup_url": nav_pickup_url,    # NEW
+            "nav_dropoff_url": nav_dropoff_url,  # NEW
+            "route_url": route_url,              # NEW (explicit)
+            # Optional passthroughs for the front-end map
+            "pickup_latitude": s_lat, "pickup_longitude": s_lng,
+            "dropoff_latitude": e_lat, "dropoff_longitude": e_lng,
+            "pickup_address": pu_addr, "pickup_city": pu_city,
+            "dropoff_address": do_addr, "dropoff_city": do_city,
         })
 
     drivers = list(Driver.objects.order_by("name").values("id", "name")) if user.is_staff else []
@@ -3847,7 +3869,7 @@ def driver_dashboard(request):
             "driver": ({"id": selected_driver.id, "name": getattr(selected_driver, "name", None)} if selected_driver else None),
             "drivers": drivers if user.is_staff else None,
             "count": len(trips),
-            "trips": trips,
+            "trips": trips,         # contains nav_pickup_url / nav_dropoff_url / route_url
             "entries": trips,
             "driver_display_name": driver_display_name,
         })
@@ -3855,7 +3877,8 @@ def driver_dashboard(request):
     # --- 3) SAFE MODE: render a self-contained HTML (no base.html) ---
     if os.environ.get("DRIVER_DASH_SAFE", "1") == "1":
         rows = "\n".join(
-            f"<tr><td>{t['time_str']}</td><td>{t['client']}</td><td>{t['driver']}</td><td>{t['pickup_label']}</td><td>{t['dropoff_label']}</td></tr>"
+            f"<tr><td>{t['time_str']}</td><td>{t['client']}</td><td>{t['driver']}</td>"
+            f"<td>{t['pickup_label']}</td><td>{t['dropoff_label']}</td></tr>"
             for t in trips
         ) or "<tr><td colspan='5'>No trips today.</td></tr>"
         html = f"""<!doctype html><meta charset="utf-8">
@@ -3881,6 +3904,7 @@ def driver_dashboard(request):
         "driver_display_name": driver_display_name,
     }
     return render(request, "scheduler/driver_dashboard.html", ctx)
+
 
 
 
