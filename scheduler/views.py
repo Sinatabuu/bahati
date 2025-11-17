@@ -3677,9 +3677,20 @@ from django.contrib import messages
 from urllib.parse import quote_plus
 import os
 
+from urllib.parse import quote_plus
+import os
+
+from django.contrib import messages
+from django.contrib.auth.decorators import login_required
+from django.http import JsonResponse, HttpResponse
+from django.shortcuts import redirect, render
+
+from .models import Driver, ScheduleEntry, Company
+
+
 @login_required(login_url="/admin/login/")
 def driver_dashboard(request):
-    from .models import Driver, ScheduleEntry
+    from datetime import date, datetime
 
     # -- DIAGNOSTIC: shows who the server thinks you are --
     if request.GET.get("diag") == "1":
@@ -3699,8 +3710,6 @@ def driver_dashboard(request):
         return HttpResponse("DRIVER_DASH_OK", content_type="text/plain")
 
     # --- 1) Inputs/identity ---
-    # inline, safe date parse (YYYY-MM-DD) → today on failure
-    from datetime import date, datetime
     raw_day = request.GET.get("date")
     try:
         day = datetime.strptime(raw_day.strip(), "%Y-%m-%d").date() if raw_day else date.today()
@@ -3717,18 +3726,23 @@ def driver_dashboard(request):
     selected_driver = None
     is_driver_user = False
 
+    # Start with company from the logged-in driver, if any
+    company = getattr(user_driver, "company", None)
+
     if user.is_staff:
+        # Staff can optionally pick a specific driver OR see all drivers in their company
         if driver_id_param == "all":
             show_all = True
         elif driver_id_param:
             try:
-                selected_driver = Driver.objects.get(pk=int(driver_id_param))
+                selected_driver = Driver.objects.select_related("company").get(pk=int(driver_id_param))
             except Exception:
                 selected_driver = None
 
         if not selected_driver and driver_name_param:
             selected_driver = (
                 Driver.objects
+                .select_related("company")
                 .filter(name__icontains=driver_name_param)
                 .order_by("name")
                 .first()
@@ -3738,18 +3752,30 @@ def driver_dashboard(request):
         if selected_driver is None and driver_id_param != "all":
             show_all = True
 
+        # If the staff user selected a driver and we don't yet have a company, derive it
+        if selected_driver and company is None:
+            company = selected_driver.company
+
+        # Optional: allow superusers to scope by ?company=slug when no driver/company inferred
+        if company is None and user.is_superuser:
+            company_slug = request.GET.get("company")
+            if company_slug:
+                company = Company.objects.filter(slug=company_slug).first()
+
     else:
+        # Non-staff → must be a driver user
         if not user_driver:
             try:
                 messages.error(request, "❌ No driver profile linked to your account.")
             except Exception:
                 pass
-        # send to login if no linked driver profile
+            # send to login if no linked driver profile
             return redirect("/admin/login/")
-        # user has a linked driver profile → proceed
+
         selected_driver = user_driver
         show_all = False
         is_driver_user = True
+        # company already set from user_driver above
 
     # --- 2) Data (kept minimal; no 500s) ---
     qs = (
@@ -3759,6 +3785,11 @@ def driver_dashboard(request):
         .order_by("driver__name", "start_time", "id")
     )
 
+    # 🔐 Company scoping: if we know the company, always filter by it
+    if company is not None:
+        qs = qs.filter(company=company)
+
+    # For non-staff, also restrict to THEIR driver only (per-employee view)
     if not user.is_staff:
         if not user_driver:
             messages.error(request, "No driver profile linked to your account.")
@@ -3790,7 +3821,7 @@ def driver_dashboard(request):
             return f"{lat},{lng}"
         return quote_plus(label) if label else None
 
-    trips, features = [], []
+    trips = []
     for e in qs:
         c = getattr(e, "client", None)
         client_label = _first_nonempty(getattr(e, "client_name", None), getattr(c, "name", None))
@@ -3820,7 +3851,7 @@ def driver_dashboard(request):
         nav_pickup_url  = f"https://www.google.com/maps/dir/?api=1&destination={pickup_q}"  if pickup_q  else None
         nav_dropoff_url = f"https://www.google.com/maps/dir/?api=1&destination={dropoff_q}" if dropoff_q else None
 
-        # Full route (optional): pickup → dropoff (kept for compatibility / optional UI)
+        # Full route (optional): pickup → dropoff
         route_url = (
             f"https://www.google.com/maps/dir/?api=1&origin={pickup_q}&destination={dropoff_q}"
             if (pickup_q and dropoff_q) else None
@@ -3842,18 +3873,25 @@ def driver_dashboard(request):
             "time_str": time_str,
             "pickup_label": pu_label or "—",
             "dropoff_label": do_label or "—",
-            "maps_url": route_url,               # backward compatibility
-            "nav_pickup_url": nav_pickup_url,    # NEW
-            "nav_dropoff_url": nav_dropoff_url,  # NEW
-            "route_url": route_url,              # NEW (explicit)
-            # Optional passthroughs for the front-end map
+            "maps_url": route_url,
+            "nav_pickup_url": nav_pickup_url,
+            "nav_dropoff_url": nav_dropoff_url,
+            "route_url": route_url,
             "pickup_latitude": s_lat, "pickup_longitude": s_lng,
             "dropoff_latitude": e_lat, "dropoff_longitude": e_lng,
             "pickup_address": pu_addr, "pickup_city": pu_city,
             "dropoff_address": do_addr, "dropoff_city": do_city,
         })
 
-    drivers = list(Driver.objects.order_by("name").values("id", "name")) if user.is_staff else []
+    # Staff: show drivers *for this company only*
+    if user.is_staff:
+        driver_qs = Driver.objects.all()
+        if company is not None:
+            driver_qs = driver_qs.filter(company=company)
+        drivers = list(driver_qs.order_by("name").values("id", "name"))
+    else:
+        drivers = []
+
     driver_display_name = (
         getattr(selected_driver, "name", None)
         or (user.get_full_name() if hasattr(user, "get_full_name") else "")
@@ -3866,10 +3904,13 @@ def driver_dashboard(request):
             "ok": True,
             "date": day.isoformat(),
             "show_all": show_all,
-            "driver": ({"id": selected_driver.id, "name": getattr(selected_driver, "name", None)} if selected_driver else None),
+            "driver": (
+                {"id": selected_driver.id, "name": getattr(selected_driver, "name", None)}
+                if selected_driver else None
+            ),
             "drivers": drivers if user.is_staff else None,
             "count": len(trips),
-            "trips": trips,         # contains nav_pickup_url / nav_dropoff_url / route_url
+            "trips": trips,
             "entries": trips,
             "driver_display_name": driver_display_name,
         })
@@ -3904,6 +3945,7 @@ def driver_dashboard(request):
         "driver_display_name": driver_display_name,
     }
     return render(request, "scheduler/driver_dashboard.html", ctx)
+
 
 
 
