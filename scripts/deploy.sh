@@ -12,6 +12,6 @@ pip install -r requirements.txt
 python manage.py migrate --noinput
 python manage.py collectstatic --noinput
 
-sudo systemctl reload bahati || sudo systemctl restart bahati
+sudo systemctl restart bahati
 echo "✅ deployed. quick check:"
 curl -sSI http://127.0.0.1:8001/healthz | sed -n '1p'

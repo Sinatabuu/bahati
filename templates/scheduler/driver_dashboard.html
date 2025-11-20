@@ -1,75 +1,150 @@
-{% extends 'scheduler/base.html' %}
+
+{% extends "scheduler/base.html" %}
 {% load static %}
 
-{% block title %}Driver Dashboard · Bahati{% endblock %}
-
 {% block extra_head %}
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="anonymous">
-<style>
-  .wrap { display: grid; gap: 12px; }
-  .panel { background:#fff; border:1px solid #e5e7eb; border-radius:14px; box-shadow:0 1px 2px rgba(0,0,0,.04); }
-  .panel-h { padding:10px 12px; border-bottom:1px solid #eef2f7; display:flex; align-items:center; gap:10px; justify-content:space-between; }
-  .panel-b { padding:12px; }
-  .sticky-head { position:sticky; top:56px; z-index:5; background:#fff; border-bottom:1px dashed #e5e7eb; }
-  .h-controls { display:flex; gap:10px; align-items:center; }
-  .trips { display:flex; flex-direction:column; gap:10px; }
-  .trip { border:1px solid #e6e8ef; border-radius:12px; padding:12px; display:grid; gap:10px; }
-  .meta { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
-  .time { font-variant-numeric: tabular-nums; background:#0d1b2a; color:#fff; padding:4px 10px; border-radius:999px; font-weight:700; }
-  .status { border-radius:999px; padding:2px 8px; font-weight:700; font-size:.8rem; border:1px solid #e5e7eb; color:#374151; background:#eef2ff; text-transform:capitalize; }
-  .status.completed { background:#d1fae5; border-color:#bbf7d0; color:#065f46; }
-  .title { font-weight:800; font-size:1rem; color:#111827; }
-  .kv { display:grid; grid-template-columns: 18px 1fr; gap:8px; font-size:.96rem; }
-  .kv .i { text-align:center; color:#6b7280; }
-  .actions { display:flex; gap:8px; flex-wrap:wrap; }
-  .btn-big { padding:10px 14px; font-weight:700; border-radius:12px; border:1px solid #e5e7eb; background:#fff; min-height:42px; }
-  .btn-nav { background:#0d6efd; color:#fff; border-color:#0d6efd; }
-  .btn-complete { background:#0f766e; color:#fff; border-color:#0f766e; }
-  .hint { color:#6b7280; font-size:.85rem; }
-  #miniMap { height: 220px; border-radius:12px; border:1px solid #e5e7eb; }
-  @media (min-width: 768px) {
-    .wrap { grid-template-columns: minmax(0, 1fr) 360px; align-items:start; }
-    #miniMap { height: 380px; }
-  }
-  .btn-small {
-    appearance:none; border:1px solid #e5e7eb; background:#111827; color:#fff;
-    padding:6px 10px; border-radius:10px; text-decoration:none; font-size:.9rem;
-  }
-  .btn-small:hover { filter:brightness(1.03); }
-  .muted { color:#6b7280; font-size:.9rem; }
-</style>
+  {{ block.super }}
+  <link rel="stylesheet"
+        href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+        crossorigin="anonymous">
+  <style>
+    .wrap { display: grid; gap: 12px; }
+    .panel { background:#fff; border:1px solid #e5e7eb; border-radius:14px; box-shadow:0 1px 2px rgba(0,0,0,.04); }
+    .panel-h { padding:10px 12px; border-bottom:1px solid #eef2f7; display:flex; align-items:center; gap:10px; justify-content:space-between; }
+    .panel-b { padding:12px; }
+    .sticky-head { position:sticky; top:56px; z-index:5; background:#fff; border-bottom:1px dashed #e5e7eb; }
+    .h-controls { display:flex; gap:10px; align-items:center; }
+    .trips { display:flex; flex-direction:column; gap:10px; }
+    .trip { border:1px solid #e6e8ef; border-radius:12px; padding:12px; display:grid; gap:10px; }
+    .meta { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+    .time { font-variant-numeric: tabular-nums; background:#0d1b2a; color:#fff; padding:4px 10px; border-radius:999px; font-weight:700; }
+    .status { border-radius:999px; padding:2px 8px; font-weight:700; font-size:.8rem; border:1px solid #e5e7eb; color:#374151; background:#eef2ff; text-transform:capitalize; }
+    .status.completed { background:#d1fae5; border-color:#bbf7d0; color:#065f46; }
+    .title { font-weight:800; font-size:1rem; color:#111827; }
+    .kv { display:grid; grid-template-columns: 18px 1fr; gap:8px; font-size:.96rem; }
+    .kv .i { text-align:center; color:#6b7280; }
+    .actions { display:flex; gap:8px; flex-wrap:wrap; }
+    .btn-big { padding:10px 14px; font-weight:700; border-radius:12px; border:1px solid #e5e7eb; background:#fff; min-height:42px; }
+    .btn-nav { background:#0d6efd; color:#fff; border-color:#0d6efd; }
+    .btn-complete { background:#0f766e; color:#fff; border-color:#0f766e; }
+    .hint { color:#6b7280; font-size:.85rem; }
+    #miniMap { height: 220px; border-radius:12px; border:1px solid #e5e7eb; }
+    @media (min-width: 768px) {
+      .wrap { grid-template-columns: minmax(0, 1fr) 360px; align-items:start; }
+      #miniMap { height: 380px; }
+    }
+    .btn-small {
+      appearance:none; border:1px solid #e5e7eb; background:#111827; color:#fff;
+      padding:6px 10px; border-radius:10px; text-decoration:none; font-size:.9rem;
+    }
+    .btn-small:hover { filter:brightness(1.03); }
+    .muted { color:#6b7280; font-size:.9rem; }
+  </style>
 {% endblock %}
 
+
+{% block title %}Driver Dashboard · Bahati [LIVE DEBUG]{% endblock %}
+
 {% block content %}
+
 <div class="container my-3">
   <h2 class="h5 mb-2">
     <i class="fa-solid fa-steering-wheel"></i>
     Driver Dashboard —
-    <strong>
-      {{ driver.name|default:request.user.get_full_name|default:request.user.username }}
-    </strong>
+    <strong>{{ driver_display_name|default:"Driver" }}</strong>
   </h2>
 
-  <div class="wrap" id="dd"
-       data-api="/service/api/schedule-entries/"
-       data-is-driver="{{ is_driver_user|yesno:'true,false' }}"
-       data-driver-name="{{ driver.name|default:request.user.get_full_name|default:request.user.username }}">
-
+  <div class="wrap" id="dd">
     <!-- LEFT: trips -->
     <section class="panel">
       <div class="panel-h sticky-head">
-        <div class="h-controls">
-          <label class="muted">Date</label>
-          <input id="d-date" type="date" class="form-control" />
-        </div>
-        <!-- Single clear CTA to see the whole day -->
-        <a class="btn-small" href="{% url 'scheduler:schedule_list' %}?day={{ day|default:'' }}">All Schedules (view-only)</a>
-      </div>
+  <div class="h-controls">
+    <label class="muted">Date</label>
+    <input id="d-date"
+           type="date"
+           class="form-control"
+           value="{{ day|date:'Y-m-d' }}" />
+  </div>
+
+  {% if request.user.is_staff %}
+    <a class="btn-small"
+       href="/service/schedule-list/?day={{ day|date:'Y-m-d' }}">
+      All Schedules (view-only)
+    </a>
+  {% endif %}
+</div>
+
       <div class="panel-b">
-        <div id="trip-list" class="trips"></div>
-        <div id="empty" class="text-center text-muted py-4" style="display:none">
-          No trips for this date.
+        <div id="trip-list" class="trips">
+          {% for t in trips %}
+            <article class="trip"
+                     data-id="{{ t.id }}"
+                     data-pickup-lat="{{ t.pickup_latitude|default_if_none:'' }}"
+                     data-pickup-lng="{{ t.pickup_longitude|default_if_none:'' }}"
+                     data-client="{{ t.client }}">
+              <div class="meta">
+                <span class="time">{{ t.time_str }}</span>
+                <span class="status {% if t.status == 'completed' %}completed{% endif %}">
+                  {{ t.status }}
+                </span>
+                {% if t.vehicle_name %}
+                  <span class="badge bg-light text-dark border">{{ t.vehicle_name }}</span>
+                {% endif %}
+              </div>
+
+              <div class="title">
+                {{ t.client }}
+              </div>
+
+              <div class="kv">
+                <div class="i"><i class="fa-solid fa-signs-post"></i></div>
+                <div>
+                  <strong>Pickup:</strong>
+                  {{ t.pickup_address }}
+                  {% if t.pickup_city %}, {{ t.pickup_city }}{% endif %}
+                </div>
+
+                <div class="i"><i class="fa-solid fa-location-dot"></i></div>
+                <div>
+                  <strong>Dropoff:</strong>
+                  {{ t.dropoff_address }}
+                  {% if t.dropoff_city %}, {{ t.dropoff_city }}{% endif %}
+                </div>
+              </div>
+
+              <div class="actions">
+		  {% if t.nav_pickup_url %}
+    		<a class="btn-big btn-nav"
+       		href="{{ t.nav_pickup_url }}"
+       		target="_blank" rel="noopener">Pickup</a>
+	      {% endif %}
+
+              {% if t.nav_dropoff_url %}
+             <a class="btn-big btn-nav"
+       	     href="{{ t.nav_dropoff_url }}"
+       	    target="_blank" rel="noopener">Dropoff</a>
+  	    {% elif t.route_url %}
+    	    <a class="btn-big btn-nav"
+       	    href="{{ t.route_url }}"
+            target="_blank" rel="noopener">Dropoff</a>
+ 	 {% endif %}
+
+  	<button class="btn-big btn-complete" data-action="completed">Complete</button>
+	</div>
+
+            </article>
+          {% empty %}
+            <div id="empty" class="text-center text-muted py-4">
+              No trips for this date.
+            </div>
+          {% endfor %}
         </div>
+
+        {% if trips %}
+          <div id="empty" class="text-center text-muted py-4" style="display:none">
+            No trips for this date.
+          </div>
+        {% endif %}
       </div>
     </section>
 
@@ -83,218 +158,131 @@
         <div id="miniMap"></div>
       </div>
     </section>
-
   </div>
 </div>
+
 {% endblock %}
 
 {% block extra_js %}
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin="anonymous"></script>
 <script>
 (function(){
-  const root = document.getElementById('dd');
-  const API = root.getAttribute('data-api');
-  const IS_DRIVER_USER = root.getAttribute('data-is-driver') === 'true';
+  const root   = document.getElementById('dd');
+  if (!root) return;
 
-  const elDate = document.getElementById('d-date');
-  const elList = document.getElementById('trip-list');
+  const elDate  = document.getElementById('d-date');
+  const elList  = document.getElementById('trip-list');
   const elEmpty = document.getElementById('empty');
 
-  // Default date = today
-  const today = new Date();
-  elDate.value = today.toISOString().slice(0,10);
-
-  // Map
-  let map = L.map('miniMap', { scrollWheelZoom:true, tap:true });
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{ maxZoom:19, attribution:'&copy; OpenStreetMap' }).addTo(map);
-  let markers = [];
-  function clearMarkers(){ markers.forEach(m => m.remove()); markers = []; }
-  function addMarker(lat,lng,html){ try{ const mk=L.marker([lat,lng]).addTo(map).bindPopup(html||''); markers.push(mk); return mk; }catch(e){ return null; } }
-  function fitMarkers(){ if(!markers.length){ map.setView([42.3601,-71.0589], 9); return; } const g=L.featureGroup(markers); map.fitBounds(g.getBounds().pad(0.2), { animate:false }); }
-
-  function esc(s){ return (s ?? '').toString(); }
-
-  // --- helpers to normalize field names ---
-  function first(...vals){
-    for (const v of vals) if (v !== undefined && v !== null && v !== '') return v;
-    return null;
+  // --- Date picker: reload page with ?date=YYYY-MM-DD&me=1 ---
+  if (elDate) {
+    elDate.addEventListener('change', () => {
+      const val = elDate.value;
+      if (!val) return;
+      const url = new URL(window.location.href);
+      url.searchParams.set('date', val);
+      url.searchParams.set('me', '1');
+      window.location.href = url.toString();
+    });
   }
+
+  // --- CSRF helper for POST ---
   function getCookie(name){
-    return document.cookie.split(';').map(v=>v.trim())
+    return document.cookie.split(';').map(v => v.trim())
       .find(v => v.startsWith(name + '='))?.split('=')[1] || '';
   }
   const CSRF = getCookie('csrftoken');
 
-  // === NEW dual-destination helpers (current location → pickup / dropoff) ===
-  function makeDestFromCoordsOrAddr(lat, lng, addr, city){
-    if (lat && lng) return `${lat},${lng}`;
-    const q = [addr, city].filter(Boolean).join(', ').trim();
-    return q ? encodeURIComponent(q) : null;
-  }
+  // --- Map setup ---
+  let map = L.map('miniMap', { scrollWheelZoom:true, tap:true });
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19,
+    attribution: '&copy; OpenStreetMap'
+  }).addTo(map);
 
-  function pickupNavUrl(e){
-    const lat  = first(e.pickup_lat, e.pickupLatitude, e.start_lat, e.pickup_latitude, e.pickup_latitude);
-    const lng  = first(e.pickup_lng, e.pickupLongitude, e.start_lng, e.pickup_longitude, e.pickup_longitude);
-    const addr = first(e.pickup_label, e.pickup, e.pickup_address);
-    const city = first(e.pickup_city);
-    const dest = makeDestFromCoordsOrAddr(lat, lng, addr, city);
-    return dest ? `https://www.google.com/maps/dir/?api=1&destination=${dest}` : null;
-  }
-
-  function dropoffNavUrl(e){
-    const lat  = first(e.dropoff_lat, e.dropoffLatitude, e.end_lat, e.dropoff_latitude, e.dropoff_latitude);
-    const lng  = first(e.dropoff_lng, e.dropoffLongitude, e.end_lng, e.dropoff_longitude, e.dropoff_longitude);
-    const addr = first(e.dropoff_label, e.dropoff, e.dropoff_address);
-    const city = first(e.dropoff_city);
-    const dest = makeDestFromCoordsOrAddr(lat, lng, addr, city);
-    return dest ? `https://www.google.com/maps/dir/?api=1&destination=${dest}` : null;
-  }
-
-  function cardHTML(e){
-    const client = esc(e.client || e.client_name || '—');
-    const time   = esc(e.time || e.time_str || e.start_time || '--:--');
-    const st     = (esc(e.status || 'scheduled')).toLowerCase();
-    const vehicle = esc(e.vehicle_name || e.vehicle || '');
-
-    const puAddr = esc(first(e.pickup_label, e.pickup, e.pickup_address) || '');
-    const puCity = esc(e.pickup_city || '');
-    const doAddr = esc(first(e.dropoff_label, e.dropoff, e.dropoff_address) || '');
-    const doCity = esc(e.dropoff_city || '');
-
-    const stClass = (st === 'completed' ? 'completed' : '');
-
-    // NEW: separate nav buttons
-    const navPickup  = pickupNavUrl(e);
-    const navDropoff = dropoffNavUrl(e);
-
-    return `
-      <article class="trip" data-id="${e.id}">
-        <div class="meta">
-          <span class="time">${time}</span>
-          <span class="status ${stClass}">${st || 'scheduled'}</span>
-          ${vehicle ? `<span class="badge bg-light text-dark border">${vehicle}</span>` : ``}
-        </div>
-
-        <div class="title">${client}</div>
-
-        <div class="kv">
-          <div class="i"><i class="fa-solid fa-signs-post"></i></div>
-          <div>
-            <strong>Pickup:</strong> ${puAddr}${puCity ? `, ${puCity}` : ''}
-            <div class="actions" style="margin-top:8px">
-              ${
-                navPickup
-                  ? `<a class="btn-big btn-nav" href="${navPickup}" target="_blank" rel="noopener">Navigate to Pickup</a>`
-                  : `<button class="btn-big" disabled>Pickup N/A</button>`
-              }
-            </div>
-          </div>
-
-          <div class="i"><i class="fa-solid fa-location-dot"></i></div>
-          <div>
-            <strong>Dropoff:</strong> ${doAddr}${doCity ? `, ${doCity}` : ''}
-            <div class="actions" style="margin-top:8px">
-              ${
-                navDropoff
-                  ? `<a class="btn-big btn-nav" href="${navDropoff}" target="_blank" rel="noopener">Navigate to Dropoff</a>`
-                  : `<button class="btn-big" disabled>Dropoff N/A</button>`
-              }
-            </div>
-          </div>
-        </div>
-
-        <div class="actions" style="margin-top:6px">
-          <button class="btn-big btn-complete" data-action="completed">Mark complete</button>
-        </div>
-      </article>
-    `;
-  }
-
-  function render(entries){
-    elList.innerHTML = entries.map(cardHTML).join('');
-    elEmpty.style.display = entries.length ? 'none' : 'block';
-
-    clearMarkers();
-    for (const e of entries){
-      const lat = first(e.pickup_lat, e.pickupLatitude, e.start_lat, e.pickup_latitude, e.pickup_latitude);
-      const lng = first(e.pickup_lng, e.pickupLongitude, e.start_lng, e.pickup_longitude, e.pickup_longitude);
-      if (lat && lng) addMarker(lat, lng, `<strong>${esc(e.client || e.client_name || '')}</strong><br>${esc(e.pickup_address || e.pickup_label || '')}`);
+  let markers = [];
+  function addMarker(lat, lng, html){
+    try {
+      const mk = L.marker([lat, lng]).addTo(map).bindPopup(html || '');
+      markers.push(mk);
+      return mk;
+    } catch (e) {
+      return null;
     }
-    fitMarkers();
+  }
 
-    // bind complete
-    elList.querySelectorAll('.trip').forEach((card)=>{
-      const btn = card.querySelector('[data-action="completed"]');
-      if (!btn) return;
-      const entryId = card.getAttribute('data-id');
-      btn.addEventListener('click', async ()=>{
-        btn.disabled = true;
+  const cards = elList ? elList.querySelectorAll('.trip') : [];
+  let anyMarkers = false;
+
+  cards.forEach(card => {
+    const clientName = card.dataset.client || '';
+    const lat = parseFloat(card.dataset.pickupLat || card.getAttribute('data-pickup-lat') || '');
+    const lng = parseFloat(card.dataset.pickupLng || card.getAttribute('data-pickup-lng') || '');
+
+    // Add markers for pickup locations if we have coords
+    if (!isNaN(lat) && !isNaN(lng)) {
+      addMarker(lat, lng, '<strong>' + clientName + '</strong>');
+      anyMarkers = true;
+    }
+
+    const entryId    = card.dataset.id;
+    const statusEl   = card.querySelector('.status');
+    const btnComplete = card.querySelector('[data-action="completed"]');
+
+    function setStatus(status){
+      if (!statusEl) return;
+      statusEl.textContent = status;
+      statusEl.classList.toggle('completed', status === 'completed');
+    }
+
+    // --- Activate Complete button ---
+    if (btnComplete && entryId) {
+      btnComplete.addEventListener('click', async () => {
+        btnComplete.disabled = true;
         try {
-          await updateStatus(entryId, "completed");
-          const st = card.querySelector('.status');
-          st.className = 'status completed';
-          st.textContent = 'completed';
+          const resp = await fetch('/service/api/schedule/status/', {
+            method: 'POST',
+            credentials: 'include',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Requested-With': 'XMLHttpRequest',
+              'X-CSRFToken': CSRF
+            },
+            body: JSON.stringify({ entry_id: entryId, status: 'completed' })
+          });
+
+          const text = await resp.text();
+          let data = {};
+          try { data = JSON.parse(text); } catch (e) {}
+
+          if (!resp.ok || data.ok === false) {
+            throw new Error(data.error || 'Status update failed');
+          }
+
+          // Update pill to "completed" and green
+          setStatus('completed');
         } catch (e) {
-          alert(e.message || 'Update failed');
+          alert(e.message || 'Status update failed');
         } finally {
-          btn.disabled = false;
+          btnComplete.disabled = false;
         }
       });
-    });
-  }
-
-  async function fetchJSON(url){
-    try {
-      const r = await fetch(url, { credentials:'same-origin' });
-      const t = await r.text();
-      let data=null;
-      try{ data=JSON.parse(t); } catch { console.warn("Non-JSON from API:", t); }
-      return { status:r.status, data, raw:t };
-    } catch(e){
-      console.error(e);
-      return { status:0, data:null, raw:String(e) };
     }
+  });
+
+  // Center map
+  if (!anyMarkers) {
+    map.setView([42.3601, -71.0589], 9);   // Default Boston-ish
+  } else {
+    const group = L.featureGroup(markers);
+    map.fitBounds(group.getBounds().pad(0.2), { animate:false });
   }
 
-  async function updateStatus(entryId, status){
-    const resp = await fetch("/service/api/schedule/status/", {
-      method: "POST",
-      credentials: "include",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Requested-With": "XMLHttpRequest",
-        "X-CSRFToken": CSRF
-      },
-      body: JSON.stringify({ entry_id: entryId, status })
-    });
-    const text = await resp.text();
-    let data = {};
-    try { data = JSON.parse(text); } catch (e) {
-      throw new Error("Server returned HTML for status update.");
-    }
-    if (!resp.ok || data.ok === false) {
-      throw new Error(data.error || "Status update failed");
-    }
-    return data;
+  // Empty state visibility
+  if (elEmpty) {
+    elEmpty.style.display = cards.length ? 'none' : 'block';
   }
-
-  async function load(){
-    const date = elDate.value;
-    const meParam = IS_DRIVER_USER ? "&me=1" : "";
-    const url = `${API}?date=${encodeURIComponent(date)}&day=${encodeURIComponent(date)}${meParam}`;
-    const { data } = await fetchJSON(url);
-    let entries = (data && Array.isArray(data.entries) ? data.entries : []).map(e => ({
-      ...e,
-      client:  e.client || e.client_name,
-      vehicle: e.vehicle || e.vehicle_name,
-      time:    e.time || e.time_str || e.start_time,
-      status: (e.status || 'scheduled').toLowerCase(),
-    }));
-    render(entries);
-  }
-
-  elDate.addEventListener('change', load);
-  load();
 })();
 </script>
 {% endblock %}
+

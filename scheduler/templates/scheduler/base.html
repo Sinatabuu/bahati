@@ -27,10 +27,10 @@
 
       {% now "Y-m-d" as today_str %}
       {% url 'scheduler:driver_dashboard' as dash_url %}
-      {% url 'scheduler:home' as home_url %}
+      {% url 'scheduler:service_home' as home_url %}
 
       {# Brand → always go to the main Dashboard (home) #}
-      <a class="navbar-brand" href="{% url 'scheduler:home' %}">
+      <a class="navbar-brand" href="{% url 'scheduler:service_home' %}">
       Bahati Scheduler
       </a>
 
@@ -44,7 +44,7 @@
 
           {# Home link (Dashboard) #}
           <li class="nav-item me-3">
-            <a class="nav-link" href="{{ home_url }}">
+            <a class="nav-link" href="{% url 'scheduler:service_home' %}">
               <i class="fa-solid fa-house"></i> Home
             </a>
           </li>

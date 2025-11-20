@@ -1,13 +1,21 @@
 from __future__ import annotations
 
+from datetime import date as _date, datetime as _datetime
+from urllib.parse import quote_plus
+
+from django.contrib import messages
+from django.contrib.auth.decorators import login_required
+from django.http import JsonResponse, HttpResponse
+from django.shortcuts import render, redirect
+
+from .models import ScheduleEntry, Driver
 import datetime as dt
 
 # --- stdlib ---
 import json
 import urllib.parse
 # --- third-party ---
-import pandas as pd
-
+import pandas as p
 # --- django: core / utils ---
 from django.apps import apps
 from django.conf import settings
@@ -41,6 +49,11 @@ import re
 from .forms import ClientForm, DriverForm, GenerateScheduleForm, ScheduleEntryForm
 from .models import Company
 from .services.schedule_materializer import materialize_schedule_for_date
+from .models import (
+    Company, Client, Driver, Vehicle,
+    Schedule, ScheduleEntry,
+    ScheduleTemplate, ScheduleTemplateEntry,
+)
 
 # Resolve models via the registry (app label = "scheduler")
 ScheduleEntry = apps.get_model("scheduler", "ScheduleEntry")
@@ -110,6 +123,17 @@ def admin_client_defaults(request, pk: int):
         "dropoff_state": getattr(c, "dropoff_state", ""),
     }
     return JsonResponse({"ok": True, "client": data})
+
+@login_required
+def service_home(request):
+    user_driver = Driver.objects.filter(user=request.user).first()
+
+    if user_driver and not request.user.is_staff:
+        # DRIVER → go to your full JS/Leaflet driver dashboard
+        return redirect("scheduler:driver_dashboard")
+
+    # STAFF / ADMIN → keep old behavior (full schedule)
+    return render(request, "scheduler/home.html", {})
 
 
 def _norm_city(city: str) -> str:
@@ -2964,7 +2988,7 @@ _ADDR_CITY_RE = re.compile(
     \s*               # optional space (handle '7OAKLAND' too)
     (?P<street>[A-Za-z][A-Za-z0-9\s\.\-']*)   # street body
     \s*(?P<suf>{_STREET_SUFFIX})?             # optional suffix
-    \s+                                       
+    \s+
     (?P<city>[A-Za-z][A-Za-z\s\-']+)          # city as trailing words
     $""",
     re.IGNORECASE | re.VERBOSE
@@ -3111,12 +3135,17 @@ def _route_base_from_text(text: str | None) -> str | None:
 
 
 
-@login_required(login_url="scheduler:user_login")
+
 def schedule_list(request):
     from .models import ScheduleEntry, Driver, Company  # add Company if you multi-tenant
     from django.db.models import Q, Max
     from django.utils import timezone
     import re
+    
+        # If this user is a driver (non-staff), send them to the driver dashboard
+    user_driver = Driver.objects.filter(user=request.user).first()
+    if user_driver and not request.user.is_staff:
+        return redirect("scheduler:driver_dashboard")
 
     # ---------- local helpers (safe, self-contained) ----------
     MULTI_WS = re.compile(r"\s+")
@@ -3426,59 +3455,67 @@ def _fmt_time(t):
     return t.strftime("%I:%M %p").lstrip("0")
 
 
-from django.http import JsonResponse
-from django.views.decorators.http import require_GET
-from django.contrib.auth.decorators import login_required
-from django.utils.dateparse import parse_date
-from django.utils import timezone
-from django.db.models import F
-
-from .models import ScheduleEntry, Driver
-
-
 @require_GET
 @login_required(login_url="scheduler:user_login")
 def schedule_api(request):
     """
     ADMIN / general:
     GET /service/api/schedule-entries/?date=YYYY-MM-DD
-    returns ALL entries for that date
+
+    - Staff users: return ALL entries for that date.
+    - Non-staff users: return ONLY entries for the driver's own schedule.
     """
     q_date = request.GET.get("date")
     day = parse_date(q_date) if q_date else timezone.localdate()
     if not day:
         return JsonResponse({"ok": False, "error": "invalid date"}, status=400)
 
+    # Base queryset: all entries for the day
     qs = (
         ScheduleEntry.objects
         .select_related("schedule", "driver", "vehicle")
         .filter(schedule__date=day)
         .order_by("start_time", "id")
-        .values(
-            "id",
-            "client_name",
-            "start_time",
-            "status",
-            "pickup_address",
-            "dropoff_address",
-            "pickup_city",
-            "dropoff_city",
-            "pickup_state",
-            "dropoff_state",
-        )
-        .annotate(
-            driver_id=F("driver_id"),
-            driver_name=F("driver__name"),
-            vehicle_id=F("vehicle_id"),
-            vehicle_name=F("vehicle__name"),
-            schedule_id=F("schedule_id"),
-        )
     )
+
+    # 🔹 Non-staff → treat as driver and filter to their own schedule
+    if not request.user.is_staff:
+        from .models import Driver
+        driver = Driver.objects.filter(user=request.user).first()
+        if not driver:
+            # No linked driver profile: show nothing rather than everything
+            return JsonResponse(
+                {"ok": True, "date": day.isoformat(), "count": 0, "entries": []},
+                status=200,
+            )
+        qs = qs.filter(driver=driver)
+
+    # Apply values/annotate after we’ve filtered
+    qs = qs.values(
+        "id",
+        "client_name",
+        "start_time",
+        "status",
+        "pickup_address",
+        "dropoff_address",
+        "pickup_city",
+        "dropoff_city",
+        "pickup_state",
+        "dropoff_state",
+    ).annotate(
+        driver_id=F("driver_id"),
+        driver_name=F("driver__name"),
+        vehicle_id=F("vehicle_id"),
+        vehicle_name=F("vehicle__name"),
+        schedule_id=F("schedule_id"),
+    )
+
     data = list(qs)
     return JsonResponse(
         {"ok": True, "date": day.isoformat(), "count": len(data), "entries": data},
         status=200,
     )
+
 
 
 @require_GET
@@ -3660,42 +3697,28 @@ from urllib.parse import quote_plus
 ROUTE_RE = re.compile(r"^[A-Z]{3,}\s+\d+[A-Z]?$")       # e.g. ERNEST 4A, GUDOYI 1
 TIME_RE  = re.compile(r"^\d{1,2}:\d{2}(\s*[AP]M)?$", re.I)
 
-def _first_nonempty(*vals):
-    for v in vals:
-        if v is None:
-            continue
-        s = str(v).strip()
-        if s:
-            return s
-    return ""
 
-
-from django.contrib.auth.decorators import login_required
-from django.http import HttpResponse, JsonResponse
-from django.shortcuts import render, redirect
 from django.contrib import messages
 from urllib.parse import quote_plus
 import os
-
-from urllib.parse import quote_plus
-import os
-
-from django.contrib import messages
-from django.contrib.auth.decorators import login_required
-from django.http import JsonResponse, HttpResponse
-from django.shortcuts import redirect, render
-
-from .models import Driver, ScheduleEntry, Company
 
 
 @login_required(login_url="/admin/login/")
 def driver_dashboard(request):
-    from datetime import date, datetime
 
-    # -- DIAGNOSTIC: shows who the server thinks you are --
+    from datetime import date, datetime
+    """
+    Clean, minimal driver dashboard:
+
+    - Non-staff: see ONLY their own trips for the selected date.
+    - Staff: see all trips for that date.
+    """
+
+    user = request.user
+    udriver = getattr(user, "driver", None)
+
+    # --- DIAG branch (keep this, it's gold for debugging) ---
     if request.GET.get("diag") == "1":
-        user = request.user
-        udriver = getattr(user, "driver", None)
         return JsonResponse({
             "authenticated": bool(user.is_authenticated),
             "username": getattr(user, "username", None),
@@ -3710,21 +3733,20 @@ def driver_dashboard(request):
         return HttpResponse("DRIVER_DASH_OK", content_type="text/plain")
 
     # --- 1) Inputs/identity ---
+
+    # --- Parse date (YYYY-MM-DD) or today ---
     raw_day = request.GET.get("date")
     try:
-        day = datetime.strptime(raw_day.strip(), "%Y-%m-%d").date() if raw_day else date.today()
+        day = _datetime.strptime(raw_day.strip(), "%Y-%m-%d").date() if raw_day else _date.today()
     except Exception:
-        day = date.today()
+        day = _date.today()
 
-    driver_id_param = request.GET.get("driver_id")
-    driver_name_param = (request.GET.get("driver") or "").strip()
-
-    user = request.user
-    user_driver = getattr(user, "driver", None)
-
-    show_all = False
-    selected_driver = None
-    is_driver_user = False
+    # --- Build base queryset ---
+    base_qs = (
+        ScheduleEntry.objects
+        .select_related("schedule", "driver", "client", "company", "vehicle")
+        .filter(schedule__date=day)
+    )
 
     # Start with company from the logged-in driver, if any
     company = getattr(user_driver, "company", None)
@@ -3765,10 +3787,20 @@ def driver_dashboard(request):
     else:
         # Non-staff → must be a driver user
         if not user_driver:
+
+    # Staff vs driver behaviour
+    if user.is_staff:
+        qs = base_qs.order_by("driver__name", "start_time", "id")
+        selected_driver = None
+        is_driver_user = False
+    else:
+        if not udriver:
+
             try:
                 messages.error(request, "❌ No driver profile linked to your account.")
             except Exception:
                 pass
+
             # send to login if no linked driver profile
             return redirect("/admin/login/")
 
@@ -3797,8 +3829,13 @@ def driver_dashboard(request):
         qs = qs.filter(driver=user_driver)
         show_all = False
         selected_driver = user_driver
+            return redirect("/admin/login/")
+
+        qs = base_qs.filter(driver=udriver).order_by("start_time", "id")
+        selected_driver = udriver
         is_driver_user = True
 
+    # --- Build trips list (simple, no skipping) ---
     def _first_nonempty(*vals):
         for v in vals:
             if v and str(v).strip():
@@ -3814,9 +3851,6 @@ def driver_dashboard(request):
         return addr or city
 
     def _q_from_coord_or_label(lat, lng, label):
-        """
-        Build a Google Maps-friendly token (lat,lng or URL-encoded label).
-        """
         if lat is not None and lng is not None:
             return f"{lat},{lng}"
         return quote_plus(label) if label else None
@@ -3825,12 +3859,7 @@ def driver_dashboard(request):
     for e in qs:
         c = getattr(e, "client", None)
         client_label = _first_nonempty(getattr(e, "client_name", None), getattr(c, "name", None))
-        cu = (client_label or "").upper()
-        # Skip header-like garbage rows
-        if (not e.id) or any(x in cu for x in ("PICK UP", "TIME NAME", "DRIVER ID", "ADDRESS PICK")):
-            continue
 
-        # Resolve pickup/dropoff labels
         pu_addr = _first_nonempty(_clean(getattr(e, "pickup_address", None)), getattr(c, "pickup_address", None))
         pu_city = _first_nonempty(_clean(getattr(e, "pickup_city", None)), getattr(c, "pickup_city", None))
         do_addr = _first_nonempty(_clean(getattr(e, "dropoff_address", None)), getattr(c, "dropoff_address", None))
@@ -3839,25 +3868,25 @@ def driver_dashboard(request):
         pu_label = _first_nonempty(_join(pu_addr, pu_city))
         do_label = _first_nonempty(_join(do_addr, do_city))
 
-        # Coordinates
-        s_lat, s_lng = getattr(e, "pickup_latitude", None), getattr(e, "pickup_longitude", None)
-        e_lat, e_lng = getattr(e, "dropoff_latitude", None), getattr(e, "dropoff_longitude", None)
+        s_lat = getattr(e, "pickup_latitude", None)
+        s_lng = getattr(e, "pickup_longitude", None)
+        e_lat = getattr(e, "dropoff_latitude", None)
+        e_lng = getattr(e, "dropoff_longitude", None)
 
-        # URL tokens (destination only → device uses current location)
         pickup_q  = _q_from_coord_or_label(s_lat, s_lng, pu_label)
         dropoff_q = _q_from_coord_or_label(e_lat, e_lng, do_label)
 
-        # One-tap nav links
         nav_pickup_url  = f"https://www.google.com/maps/dir/?api=1&destination={pickup_q}"  if pickup_q  else None
         nav_dropoff_url = f"https://www.google.com/maps/dir/?api=1&destination={dropoff_q}" if dropoff_q else None
 
+
         # Full route (optional): pickup → dropoff
+
         route_url = (
             f"https://www.google.com/maps/dir/?api=1&origin={pickup_q}&destination={dropoff_q}"
             if (pickup_q and dropoff_q) else None
         )
 
-        # Time label
         start_time = getattr(e, "start_time", None)
         time_str = "—"
         if start_time and hasattr(start_time, "strftime"):
@@ -3871,6 +3900,7 @@ def driver_dashboard(request):
             "client": client_label or "—",
             "driver": getattr(e.driver, "name", None),
             "time_str": time_str,
+
             "pickup_label": pu_label or "—",
             "dropoff_label": do_label or "—",
             "maps_url": route_url,
@@ -3891,6 +3921,21 @@ def driver_dashboard(request):
         drivers = list(driver_qs.order_by("name").values("id", "name"))
     else:
         drivers = []
+            "status": getattr(e, "status", "scheduled"),
+            "vehicle_name": getattr(e.vehicle, "name", None) if getattr(e, "vehicle", None) else None,
+            "pickup_address": pu_addr or "",
+            "pickup_city": pu_city or "",
+            "dropoff_address": do_addr or "",
+            "dropoff_city": do_city or "",
+            "pickup_latitude": s_lat,
+            "pickup_longitude": s_lng,
+            "dropoff_latitude": e_lat,
+            "dropoff_longitude": e_lng,
+            "nav_pickup_url": nav_pickup_url,
+            "nav_dropoff_url": nav_dropoff_url,
+            "route_url": route_url,
+        })
+
 
     driver_display_name = (
         getattr(selected_driver, "name", None)
@@ -3899,11 +3944,15 @@ def driver_dashboard(request):
         or "Driver"
     )
 
+    # JSON mode
     if request.GET.get("format") == "json":
         return JsonResponse({
             "ok": True,
             "date": day.isoformat(),
+
             "show_all": show_all,
+
+            "is_driver_user": is_driver_user,
             "driver": (
                 {"id": selected_driver.id, "name": getattr(selected_driver, "name", None)}
                 if selected_driver else None
@@ -3915,37 +3964,19 @@ def driver_dashboard(request):
             "driver_display_name": driver_display_name,
         })
 
-    # --- 3) SAFE MODE: render a self-contained HTML (no base.html) ---
-    if os.environ.get("DRIVER_DASH_SAFE", "1") == "1":
-        rows = "\n".join(
-            f"<tr><td>{t['time_str']}</td><td>{t['client']}</td><td>{t['driver']}</td>"
-            f"<td>{t['pickup_label']}</td><td>{t['dropoff_label']}</td></tr>"
-            for t in trips
-        ) or "<tr><td colspan='5'>No trips today.</td></tr>"
-        html = f"""<!doctype html><meta charset="utf-8">
-        <title>Driver Dashboard (Safe)</title>
-        <h1>Driver Dashboard — {driver_display_name}</h1>
-        <p>Date: {day}</p>
-        <p>Total trips: {len(trips)}</p>
-        <p><a href="?format=json">View JSON</a></p>
-        <table border="1" cellpadding="6" cellspacing="0">
-          <thead><tr><th>Time</th><th>Client</th><th>Driver</th><th>Pickup</th><th>Dropoff</th></tr></thead>
-          <tbody>{rows}</tbody>
-        </table>
-        """
-        return HttpResponse(html)
-
-    # --- 4) Normal template path (once safe mode is off) ---
+    # Template mode
     ctx = {
-        "selected_date": day, "day": day,
-        "show_all": show_all, "driver": selected_driver,
-        "drivers": drivers, "trips": trips, "entries": trips,
-        "DEFAULT_LAT": 42.3601, "DEFAULT_LNG": -71.0589,
+        "selected_date": day,
+        "day": day,
+        "driver": selected_driver,
         "is_driver_user": is_driver_user,
+        "trips": trips,
+        "entries": trips,
         "driver_display_name": driver_display_name,
+        "DEFAULT_LAT": 42.3601,
+        "DEFAULT_LNG": -71.0589,
     }
     return render(request, "scheduler/driver_dashboard.html", ctx)
-
 
 
 
@@ -3958,22 +3989,6 @@ def _fmt_time(t):
         return "—"
     try:    return t.strftime("%-I:%M %p")         # Linux/OSX
     except: return t.strftime("%I:%M %p").lstrip("0")  # Windows
-
-def _resolve_driver(order):
-    """
-    Resolve a Driver for a given template/standing-order row.
-    Prefer explicit FK/id, then fall back to a name match.
-    Returns Driver or None.
-    """
-    if getattr(order, "driver_id", None):
-        return Driver.objects.filter(id=order.driver_id).first()
-    name = (getattr(order, "driver_name", "") or "").strip()
-    if name:
-        return Driver.objects.filter(Q(name__iexact=name) | Q(name__icontains=name)).first()
-    return None
-
-
-
 
 
 def build_maps_url(pickup_addr, dropoff_addr):

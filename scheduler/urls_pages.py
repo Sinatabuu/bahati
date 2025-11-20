@@ -9,8 +9,8 @@ app_name = "scheduler"
 
 urlpatterns = [
     # Auth (HTML screens)
-    path("", sviews.home, name="home"),
-    #path("", sviews.root, name="home"),
+    #path("", sviews.home, name="home"),
+    path("", views.service_home, name="service_home"),
     path("login/",  sviews.user_login,  name="user_login"),
     path("logout/", auth_views.LogoutView.as_view(next_page="scheduler:user_login"), name="user_logout"),
     path(

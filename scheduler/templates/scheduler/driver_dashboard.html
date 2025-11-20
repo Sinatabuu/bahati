@@ -1,7 +1,6 @@
 {% extends 'scheduler/base.html' %}
 {% load static %}
-
-{% block title %}Driver Dashboard · Bahati{% endblock %}
+{% block title %}Driver Dashboard · Bahati[my debug]{% endblock %}
 
 {% block extra_head %}
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="anonymous">
@@ -50,27 +49,60 @@
     </strong>
   </h2>
 
+  <p class="muted">
+    debug: trips={{ trips|length }} · is_driver={{ is_driver_user }} · date={{ day|date:"Y-m-d" }}
+  </p>
+
   <div class="wrap" id="dd"
-       data-api="/service/api/schedule-entries/"
+       data-api="/service/driver-dashboard/"
        data-is-driver="{{ is_driver_user|yesno:'true,false' }}"
        data-driver-name="{{ driver.name|default:request.user.get_full_name|default:request.user.username }}">
 
     <!-- LEFT: trips -->
     <section class="panel">
-      <div class="panel-h sticky-head">
-        <div class="h-controls">
-          <label class="muted">Date</label>
-          <input id="d-date" type="date" class="form-control" />
+          <div class="panel-b">
+        <div id="trip-list" class="trips">
+          {% if trips %}
+            {% for t in trips %}
+              <article class="trip">
+                <div class="meta">
+                  <span class="time">{{ t.time_str }}</span>
+                  <span class="title">{{ t.client }}</span>
+                  {% if t.driver %}
+                    <span class="muted">Driver: {{ t.driver }}</span>
+                  {% endif %}
+                </div>
+                <div class="kv">
+                  <div class="i"><i class="fa-solid fa-location-dot"></i></div>
+                  <div>
+                    <div><strong>Pickup:</strong> {{ t.pickup_label }}</div>
+                    <div><strong>Dropoff:</strong> {{ t.dropoff_label }}</div>
+                  </div>
+                </div>
+                <div class="actions mt-2">
+                  {% if t.maps_url %}
+                    <a href="{{ t.maps_url }}" target="_blank" class="btn-big btn-nav">
+                      Navigate
+                    </a>
+                  {% else %}
+                    <span class="muted">No navigation link</span>
+                  {% endif %}
+                </div>
+              </article>
+            {% endfor %}
+          {% else %}
+            <div class="text-center text-muted py-4">
+              No trips for {{ day|date:"Y-m-d" }} for {{ driver_display_name }}.
+            </div>
+          {% endif %}
         </div>
-        <!-- Single clear CTA to see the whole day -->
-        <a class="btn-small" href="{% url 'scheduler:schedule_list' %}?day={{ day|default:'' }}">All Schedules (view-only)</a>
-      </div>
-      <div class="panel-b">
-        <div id="trip-list" class="trips"></div>
+
+        <!-- This is for the JS mode; it will be shown when the JS decides -->
         <div id="empty" class="text-center text-muted py-4" style="display:none">
           No trips for this date.
         </div>
       </div>
+
     </section>
 
     <!-- RIGHT: map -->
@@ -90,139 +122,45 @@
 
 {% block extra_js %}
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin="anonymous"></script>
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin="anonymous"></script>
+{% block extra_js %}
 <script>
-(function(){
-  const root = document.getElementById('dd');
-  const API = root.getAttribute('data-api');
-  const IS_DRIVER_USER = root.getAttribute('data-is-driver') === 'true';
+document.addEventListener('DOMContentLoaded', function () {
+  const root   = document.getElementById('dd');
+  if (!root) return;
 
+  const API    = root.getAttribute('data-api') || '/service/driver-dashboard/';
   const elDate = document.getElementById('d-date');
   const elList = document.getElementById('trip-list');
   const elEmpty = document.getElementById('empty');
 
-  // Default date = today
-  const today = new Date();
-  elDate.value = today.toISOString().slice(0,10);
-
-  // Map
-  let map = L.map('miniMap', { scrollWheelZoom:true, tap:true });
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{ maxZoom:19, attribution:'&copy; OpenStreetMap' }).addTo(map);
-  let markers = [];
-  function clearMarkers(){ markers.forEach(m => m.remove()); markers = []; }
-  function addMarker(lat,lng,html){ try{ const mk=L.marker([lat,lng]).addTo(map).bindPopup(html||''); markers.push(mk); return mk; }catch(e){ return null; } }
-  function fitMarkers(){ if(!markers.length){ map.setView([42.3601,-71.0589], 9); return; } const g=L.featureGroup(markers); map.fitBounds(g.getBounds().pad(0.2), { animate:false }); }
-
-  function esc(s){ return (s ?? '').toString(); }
-
-  // --- helpers to normalize field names ---
-  function first(...vals){
-    for (const v of vals) if (v !== undefined && v !== null && v !== '') return v;
-    return null;
+  function esc(s) {
+    return (s ?? '').toString();
   }
-  function getCookie(name){
-    return document.cookie.split(';').map(v=>v.trim())
+
+  function getCookie(name) {
+    return document.cookie
+      .split(';')
+      .map(v => v.trim())
       .find(v => v.startsWith(name + '='))?.split('=')[1] || '';
   }
   const CSRF = getCookie('csrftoken');
 
-  function mapsLinkByCoords(lat,lng){
-    if(lat && lng) return `https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}`;
-    return null;
-  }
-  function mapsLinkByQuery(addr, city){
-    const q = encodeURIComponent([addr, city].filter(Boolean).join(', '));
-    return `https://www.google.com/maps/search/?api=1&query=${q}`;
-  }
-
-  function cardHTML(e){
-    const client = esc(e.client || e.client_name || '—');
-    const time = esc(e.time || e.start_time || '--:--');
-    const st = (esc(e.status || 'scheduled')).toLowerCase();
-    const puAddr = esc(e.pickup || e.pickup_address || '');
-    const puCity = esc(e.pickup_city || '');
-    const doAddr = esc(e.dropoff || e.dropoff_address || '');
-    const doCity = esc(e.dropoff_city || '');
-    const vehicle = esc(e.vehicle_name || e.vehicle || '');
-
-    const stClass = (st === 'completed' ? 'completed' : '');
-
-    const navUrl =
-      mapsLinkByCoords(
-        first(e.pickup_lat, e.pickupLatitude, e.start_lat, e.pickup_latitude),
-        first(e.pickup_lng, e.pickupLongitude, e.start_lng, e.pickup_longitude)
-      )
-      || mapsLinkByQuery(puAddr || doAddr, puCity || doCity);
-
-    return `
-      <article class="trip" data-id="${e.id}">
-        <div class="meta">
-          <span class="time">${time}</span>
-          <span class="status ${stClass}">${st || 'scheduled'}</span>
-          ${vehicle ? `<span class="badge bg-light text-dark border">${vehicle}</span>` : ``}
-        </div>
-        <div class="title">${client}</div>
-        <div class="kv">
-          <div class="i"><i class="fa-solid fa-signs-post"></i></div>
-          <div><strong>Pickup:</strong> ${puAddr}${puCity ? `, ${puCity}` : ''}</div>
-          <div class="i"><i class="fa-solid fa-location-dot"></i></div>
-          <div><strong>Dropoff:</strong> ${doAddr}${doCity ? `, ${doCity}` : ''}</div>
-        </div>
-        <div class="actions">
-          <a class="btn-big btn-nav" href="${navUrl}" target="_blank" rel="noopener">Navigate</a>
-          <button class="btn-big btn-complete" data-action="completed">Mark complete</button>
-        </div>
-      </article>
-    `;
-  }
-
-  function render(entries){
-    elList.innerHTML = entries.map(cardHTML).join('');
-    elEmpty.style.display = entries.length ? 'none' : 'block';
-
-    clearMarkers();
-    for (const e of entries){
-      const lat = first(e.pickup_lat, e.pickupLatitude, e.start_lat, e.pickup_latitude);
-      const lng = first(e.pickup_lng, e.pickupLongitude, e.start_lng, e.pickup_longitude);
-      if (lat && lng) addMarker(lat, lng, `<strong>${esc(e.client || e.client_name || '')}</strong><br>${esc(e.pickup_address || '')}`);
-    }
-    fitMarkers();
-
-    // bind complete
-    elList.querySelectorAll('.trip').forEach((card)=>{
-      const btn = card.querySelector('[data-action="completed"]');
-      if (!btn) return;
-      const entryId = card.getAttribute('data-id');
-      btn.addEventListener('click', async ()=>{
-        btn.disabled = true;
-        try {
-          await updateStatus(entryId, "completed");
-          const st = card.querySelector('.status');
-          st.className = 'status completed';
-          st.textContent = 'completed';
-        } catch (e) {
-          alert(e.message || 'Update failed');
-        } finally {
-          btn.disabled = false;
-        }
-      });
-    });
-  }
-
-  async function fetchJSON(url){
+  async function fetchJSON(url) {
     try {
-      const r = await fetch(url, { credentials:'same-origin' });
-      const t = await r.text();
-      let data=null; 
-      try{ data=JSON.parse(t); } catch { console.warn("Non-JSON from API:", t); }
-      return { status:r.status, data, raw:t };
-    } catch(e){
-      console.error(e);
-      return { status:0, data:null, raw:String(e) };
+      const r = await fetch(url, { credentials: 'same-origin' });
+      const text = await r.text();
+      let data = null;
+      try { data = JSON.parse(text); } catch (e) {
+        console.error('JSON parse error:', e, text);
+      }
+      return data;
+    } catch (e) {
+      console.error('fetch error:', e);
+      return null;
     }
   }
 
-  async function updateStatus(entryId, status){
+  async function updateStatus(entryId, status) {
     const resp = await fetch("/service/api/schedule/status/", {
       method: "POST",
       credentials: "include",
@@ -244,24 +182,118 @@
     return data;
   }
 
-  async function load(){
-    const date = elDate.value;
-    const meParam = IS_DRIVER_USER ? "&me=1" : "";
-    const url = `${API}?date=${encodeURIComponent(date)}&day=${encodeURIComponent(date)}${meParam}`;
-    const { data } = await fetchJSON(url);
-    let entries = (data && Array.isArray(data.entries) ? data.entries : []).map(e => ({
-      ...e,
-      client:  e.client || e.client_name,
-      vehicle: e.vehicle || e.vehicle_name,
-      time:    e.time || e.start_time,
-      status: (e.status || 'scheduled').toLowerCase(),
-    }));
-    render(entries);
+  function cardHTML(e) {
+    // Matches the JSON you pasted: id, client, driver, time_str, pickup_label, dropoff_label, maps_url
+    const client = esc(e.client || e.client_name || '—');
+    const time   = esc(e.time_str || e.time || e.start_time || '--:--');
+    const pickup = esc(e.pickup_label || e.pickup_address || '');
+    const drop   = esc(e.dropoff_label || e.dropoff_address || '');
+    const navUrl = esc(e.maps_url || '#');
+    const status = esc((e.status || 'scheduled')).toLowerCase();
+    const stClass = status === 'completed' ? 'completed' : '';
+
+    return `
+      <article class="trip" data-id="${e.id}">
+        <div class="meta">
+          <span class="time">${time}</span>
+          <span class="status ${stClass}">${status || 'scheduled'}</span>
+        </div>
+        <div class="title">${client}</div>
+        <div class="kv">
+          <div class="i"><i class="fa-solid fa-signs-post"></i></div>
+          <div><strong>Pickup:</strong> ${pickup}</div>
+          <div class="i"><i class="fa-solid fa-location-dot"></i></div>
+          <div><strong>Dropoff:</strong> ${drop}</div>
+        </div>
+        <div class="actions">
+          <a class="btn-big btn-nav" href="${navUrl}" target="_blank" rel="noopener">Navigate</a>
+          <button class="btn-big btn-pickup" data-action="pickup">Pickup done</button>
+          <button class="btn-big btn-dropoff" data-action="dropoff">Dropoff done</button>
+        </div>
+      </article>
+    `;
   }
 
-  elDate.addEventListener('change', load);
+  function bindButtons() {
+    if (!elList) return;
+    elList.querySelectorAll('.trip').forEach((card) => {
+      const entryId = card.getAttribute('data-id');
+      const stEl    = card.querySelector('.status');
+
+      const btnPickup  = card.querySelector('[data-action="pickup"]');
+      const btnDropoff = card.querySelector('[data-action="dropoff"]');
+
+      if (btnPickup) {
+        btnPickup.addEventListener('click', async () => {
+          btnPickup.disabled = true;
+          try {
+            await updateStatus(entryId, "en_route");
+            if (stEl) {
+              stEl.className = 'status';
+              stEl.textContent = 'en_route';
+            }
+          } catch (e) {
+            alert(e.message || 'Pickup update failed');
+          } finally {
+            btnPickup.disabled = false;
+          }
+        });
+      }
+
+      if (btnDropoff) {
+        btnDropoff.addEventListener('click', async () => {
+          btnDropoff.disabled = true;
+          try {
+            await updateStatus(entryId, "completed");
+            if (stEl) {
+              stEl.className = 'status completed';
+              stEl.textContent = 'completed';
+            }
+          } catch (e) {
+            alert(e.message || 'Dropoff update failed');
+          } finally {
+            btnDropoff.disabled = false;
+          }
+        });
+      }
+    });
+  }
+
+  async function load() {
+    const date = elDate ? elDate.value : '';
+    const url  = `${API}?date=${encodeURIComponent(date)}&format=json`;
+    const data = await fetchJSON(url);
+
+    if (!data || !Array.isArray(data.entries)) {
+      if (elList)  elList.innerHTML = '';
+      if (elEmpty) elEmpty.style.display = 'block';
+      return;
+    }
+
+    const entries = data.entries.map(e => ({
+      ...e,
+      client: e.client || e.client_name,
+      time:   e.time_str || e.time || e.start_time,
+      status: (e.status || 'scheduled').toLowerCase(),
+    }));
+
+    if (elList)  elList.innerHTML = entries.map(cardHTML).join('');
+    if (elEmpty) elEmpty.style.display = entries.length ? 'none' : 'block';
+
+    bindButtons();
+  }
+
+  // init date
+  if (elDate) {
+    const today = new Date();
+    elDate.value = today.toISOString().slice(0, 10);
+    elDate.addEventListener('change', load);
+  }
+
+  // initial load
   load();
-})();
+});
 </script>
+{% endblock %}
 
 {% endblock %}
