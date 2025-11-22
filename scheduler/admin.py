@@ -435,3 +435,36 @@ class ScheduleEntryInline(admin.TabularInline):
     class Media:
         js = ("scheduler/admin_client_defaults.js",)
 
+
+from django.contrib import admin
+from .models import TripEventLog
+
+@admin.register(TripEventLog)
+class TripEventLogAdmin(admin.ModelAdmin):
+    list_display = ("timestamp", "event_type", "schedule_entry", "driver", "vehicle", "latitude", "longitude")
+    list_filter = ("event_type", "timestamp", "driver")
+    search_fields = ("schedule_entry__client_name", "driver__name", "notes")
+
+    # make it read-only in admin, so no one edits audit logs
+    readonly_fields = (
+        "schedule_entry",
+        "event_type",
+        "timestamp",
+        "driver",
+        "vehicle",
+        "latitude",
+        "longitude",
+        "notes",
+        "ip_address",
+        "user_agent",
+    )
+
+    def has_add_permission(self, request):
+        # no manual creation via admin
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False

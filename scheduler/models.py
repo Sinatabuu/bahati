@@ -446,3 +446,81 @@ class ScheduleTemplateEntry(models.Model):
         # Call full_clean to trigger validation
         self.full_clean()
         super().save(*args, **kwargs)
+
+
+# scheduler/models.py
+from django.db import models
+from django.conf import settings
+
+# adjust imports to match your actual models
+# from .models import ScheduleEntry, DriverProfile, Vehicle  # example
+
+class TripEventLog(models.Model):
+    EVENT_EN_ROUTE = "en_route"
+    EVENT_ARRIVED = "arrived"
+    EVENT_COMPLETED = "completed"
+    EVENT_CANCELLED = "cancelled"
+    EVENT_NO_SHOW = "no_show"
+    EVENT_DELAYED = "delayed"
+    EVENT_INCIDENT = "incident"
+
+    EVENT_TYPE_CHOICES = [
+        (EVENT_EN_ROUTE, "En Route"),
+        (EVENT_ARRIVED, "Arrived"),
+        (EVENT_COMPLETED, "Completed"),
+        (EVENT_CANCELLED, "Cancelled"),
+        (EVENT_NO_SHOW, "No Show"),
+        (EVENT_DELAYED, "Delayed"),
+        (EVENT_INCIDENT, "Incident"),
+    ]
+
+    schedule_entry = models.ForeignKey(
+        "scheduler.ScheduleEntry",
+        on_delete=models.CASCADE,
+        related_name="event_logs",
+    )
+
+    event_type = models.CharField(
+        max_length=32,
+        choices=EVENT_TYPE_CHOICES,
+    )
+
+    # immutable audit timestamp
+    timestamp = models.DateTimeField(auto_now_add=True)
+
+    # Who was driving (link this to your actual driver model)
+    driver = models.ForeignKey(
+        "scheduler.Driver",  # adjust to your driver model
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="trip_event_logs",
+    )
+
+    # Vehicle (if you have a Vehicle model; otherwise you can use a CharField)
+    vehicle = models.ForeignKey(
+        "scheduler.Vehicle",        # adjust or replace with CharField if needed
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="trip_event_logs",
+    )
+
+    # optional geo
+    latitude = models.FloatField(null=True, blank=True)
+    longitude = models.FloatField(null=True, blank=True)
+
+    # free text for notes / incident details
+    notes = models.TextField(blank=True)
+
+    # optional for deeper audits
+    ip_address = models.GenericIPAddressField(null=True, blank=True)
+    user_agent = models.TextField(blank=True)
+
+    class Meta:
+        ordering = ["-timestamp"]  # newest first
+        verbose_name = "Trip Event Log"
+        verbose_name_plural = "Trip Event Logs"
+
+    def __str__(self):
+        return f"{self.timestamp:%Y-%m-%d %H:%M} · {self.event_type} · SE#{self.schedule_entry_id}"

@@ -1,4 +1,39 @@
 from __future__ import annotations
+import os
+from django.views.decorators.csrf import ensure_csrf_cookie
+from django.utils.cache import patch_cache_control
+from django.utils.timezone import localdate
+from .models import Client
+from .forms import ScheduleEntryForm
+from .models import ScheduleEntry, Schedule, Client, Driver
+from django.views.decorators.http import require_GET
+from django.contrib.admin.views.decorators import staff_member_required, user_passes_test
+from scheduler.models import ScheduleTemplate, Schedule, ScheduleEntry, Company
+from .services.recommend import recommend_driver_for
+# <- ensure this import points to the form you think it does
+from .forms import ScheduleEntryForm
+from .models import ScheduleEntry
+from django.views.decorators.csrf import csrf_exempt
+from django.views.decorators.http import require_http_methods
+from django.http import JsonResponse
+from .models import Driver, ScheduleEntry  # ⬅️ use ScheduleEntry now
+from scheduler.models import ScheduleEntry, Client, Driver
+from typing import Optional, Dict
+from datetime import datetime
+from .models import Schedule, ScheduleEntry, Driver  # make sure these exist
+from django.db.models import Q
+from django.db import transaction
+from django.views.decorators.csrf import ensure_csrf_cookie, csrf_exempt
+from django.views.decorators.http import require_POST
+from django.http import JsonResponse, HttpResponseBadRequest
+from datetime import timedelta
+from django.db.models import Prefetch
+from django.shortcuts import render
+from django.shortcuts import redirect
+from django.utils.dateparse import parse_date as _parse_django
+import datetime as _dt
+from django.http import JsonResponse, Http404
+from django.http import Http404  # add this if not present
 
 from datetime import date as _date, datetime as _datetime
 from urllib.parse import quote_plus
@@ -61,7 +96,6 @@ Driver = apps.get_model("scheduler", "Driver")
 Client = apps.get_model("scheduler", "Client")
 # scheduler/views.py
 # ... existing imports ...
-from django.http import Http404  # add this if not present
 
 # Make AutoSchedule optional at import time
 try:
@@ -69,7 +103,6 @@ try:
 except Exception:
     AutoSchedule = None
 
-import re
 
 # common misspellings / alternates you showed in data
 _CITY_NORMALIZE = {
@@ -94,13 +127,14 @@ _CITY_NORMALIZE = {
 }
 
 _MULTI_WS = re.compile(r"\s+")
+
+
 def _clean_ws(s: str) -> str:
     return _MULTI_WS.sub(" ", (s or "").strip())
 
+
 # scheduler/views.py
-from django.contrib.admin.views.decorators import staff_member_required
-from django.http import JsonResponse, Http404
-from django.apps import apps
+
 
 @staff_member_required
 def admin_client_defaults(request, pk: int):
@@ -124,6 +158,7 @@ def admin_client_defaults(request, pk: int):
     }
     return JsonResponse({"ok": True, "client": data})
 
+
 @login_required
 def service_home(request):
     user_driver = Driver.objects.filter(user=request.user).first()
@@ -143,6 +178,7 @@ def _norm_city(city: str) -> str:
     key = c.lower()
     return _CITY_NORMALIZE.get(key, c.title())
 
+
 def _strip_trailing_city_from_addr(addr: str, city: str) -> str:
     """
     If addr already ends with ', CITY' or ' CITY' (case-insensitive), remove that suffix.
@@ -155,9 +191,11 @@ def _strip_trailing_city_from_addr(addr: str, city: str) -> str:
     # remove suffix ", City" or " City" once
     pattern = rf"[,\s]*{re.escape(c)}\s*$"
     a2 = re.sub(pattern, "", a, flags=re.IGNORECASE)
-    # If someone typed CITY twice inside address, keep first occurrence only at most
+    # If someone typed CITY twice inside address, keep first occurrence only
+    # at most
     a2 = a2.strip().strip(",")
     return a2 or a  # fallback to original if we stripped too far
+
 
 def _pretty_addr(addr: str, city: str) -> str:
     """
@@ -169,7 +207,8 @@ def _pretty_addr(addr: str, city: str) -> str:
     if not a and not c:
         return "—"
 
-    # If address *ends with* the city, remove that suffix so we can format consistently
+    # If address *ends with* the city, remove that suffix so we can format
+    # consistently
     a_no_tail = _strip_trailing_city_from_addr(a, c)
 
     # If city appears elsewhere in the address text, don't append it
@@ -192,11 +231,16 @@ DEFAULT_LNG = -71.34866
 
 WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
-ROUTE_RE = re.compile(r"^\s*([A-Z]{3,})\s+\d+[A-Z]?\s*$")            # e.g. ERNEST 4A, GUDOYI 1, JOCK 3B
-TIME_RE  = re.compile(r"^\s*\d{1,2}:\d{2}(\s*[AP]M)?\s*$", re.I)     # e.g. 8:00, 7:30 AM
+# e.g. ERNEST 4A, GUDOYI 1, JOCK 3B
+ROUTE_RE = re.compile(r"^\s*([A-Z]{3,})\s+\d+[A-Z]?\s*$")
+TIME_RE = re.compile(
+    r"^\s*\d{1,2}:\d{2}(\s*[AP]M)?\s*$",
+     re.I)     # e.g. 8:00, 7:30 AM
+
 
 def _is_route_label(s: str) -> bool:
     return bool(s and ROUTE_RE.match(str(s).strip()))
+
 
 def _base_driver_from_route(s: str) -> str | None:
     """
@@ -212,6 +256,7 @@ def _base_driver_from_route(s: str) -> str | None:
     base = m.group(1)  # ERNEST
     # title case but keep acronyms readable (KENNEDY -> Kennedy)
     return base.capitalize()
+
 
 def _clean_place_label(s: str) -> str | None:
     """
@@ -229,6 +274,7 @@ def _clean_place_label(s: str) -> str | None:
         return None
     return s
 
+
 def _display_time(entry) -> str | None:
     """
     Show a single time for the row. Prefer start_time, then end_time.
@@ -242,6 +288,7 @@ def _display_time(entry) -> str | None:
         return t.strftime("%-I:%M %p")   # Linux/Unix
     except Exception:
         return t.strftime("%I:%M %p")    # Windows-safe (leads with 0)
+
 
 def root(request):
     """
@@ -260,8 +307,11 @@ def root(request):
     # default: drivers / regular users
     return redirect("/service/")
 
-import re
-ROUTE_RX = re.compile(r'^[A-Z]{3,}\s+\d+[A-Z]?$', re.I)  # e.g. ERNEST 1A, JOCK 3B
+
+ROUTE_RX = re.compile(
+    r'^[A-Z]{3,}\s+\d+[A-Z]?$',
+     re.I)  # e.g. ERNEST 1A, JOCK 3B
+
 
 def safe_addr(value: str) -> str:
     """Hide route-like tokens and return a displayable address or '—'."""
@@ -272,16 +322,33 @@ def safe_addr(value: str) -> str:
         return "—"
     return v
 
+
 def display_pickup(entry, client=None):
-    val = entry.pickup_address or (getattr(client, "pickup_address", None) if client else "")
+    val = entry.pickup_address or (
+    getattr(
+        client,
+        "pickup_address",
+         None) if client else "")
     return safe_addr(val)
+
 
 def display_dropoff(entry, client=None):
-    val = entry.dropoff_address or (getattr(client, "dropoff_address", None) if client else "")
+    val = entry.dropoff_address or (
+    getattr(
+        client,
+        "dropoff_address",
+         None) if client else "")
     return safe_addr(val)
 
+
 def display_time_str(entry):
-    t = getattr(entry, "start_time", None) or getattr(entry, "pickup_time", None)
+    t = getattr(
+    entry,
+    "start_time",
+    None) or getattr(
+        entry,
+        "pickup_time",
+         None)
     if not t:
         return ""
     try:
@@ -315,8 +382,7 @@ def _display_address(entry, client, kind: str):
 
 
 # views.py
-import datetime as _dt
-from django.utils.dateparse import parse_date as _parse_django
+
 
 def _parse_any_date(s: str | None):
     if not s:
@@ -331,7 +397,6 @@ def _parse_any_date(s: str | None):
         except ValueError:
             pass
     return None
-
 
 
 @staff_member_required
@@ -355,11 +420,13 @@ def reassign_schedule_entry_v2(request):
 
     entry_id = data.get("entry_id")
     if not entry_id:
-        return JsonResponse({"ok": False, "error": "Missing entry_id"}, status=400)
+        return JsonResponse(
+            {"ok": False, "error": "Missing entry_id"}, status=400)
 
     # ---- fetch entry ----
     try:
-        entry = ScheduleEntry.objects.select_related("driver").get(pk=int(entry_id))
+        entry = ScheduleEntry.objects.select_related(
+            "driver").get(pk=int(entry_id))
     except (ScheduleEntry.DoesNotExist, ValueError):
         return JsonResponse(
             {"ok": False, "error": "Schedule entry not found"}, status=404
@@ -394,7 +461,9 @@ def reassign_schedule_entry_v2(request):
     start_time = _resolve_entry_start_time(entry)
     if svc_date and start_time:
         tz = timezone.get_current_timezone()
-        start_dt = timezone.make_aware(dt.datetime.combine(svc_date, start_time), tz)
+        start_dt = timezone.make_aware(
+    dt.datetime.combine(
+        svc_date, start_time), tz)
         if timezone.now() >= start_dt:
             return JsonResponse(
                 {"ok": False, "error": "Entry already started; cannot edit."},
@@ -448,7 +517,8 @@ def reassign_schedule_entry_v2(request):
                 status=400,
             )
     except (Driver.DoesNotExist, ValueError):
-        return JsonResponse({"ok": False, "error": "Driver not found"}, status=404)
+        return JsonResponse(
+            {"ok": False, "error": "Driver not found"}, status=404)
 
     # ---- no-op if same ----
     if entry.driver_id == new_driver.id:
@@ -528,7 +598,8 @@ def _entry_has_started(e, tz=None):
 
 
 def _can_edit_entry(e):
-    # keep any other business rules you already had here, but DO NOT read e.date
+    # keep any other business rules you already had here, but DO NOT read
+    # e.date
     if _entry_has_started(e):
         return False, "Entry already started; cannot edit."
     return True, ""
@@ -563,7 +634,8 @@ def _learn_for_client_weekday(
 
     since = asof - dt.timedelta(days=lookback_days)
 
-    # Pull recent rows for this client, then filter by weekday in Python (DB week_day varies by backend)
+    # Pull recent rows for this client, then filter by weekday in Python (DB
+    # week_day varies by backend)
     rows = list(
         ScheduleEntry.objects.filter(
             date__gte=since,
@@ -629,12 +701,10 @@ def _pick_balanced_driver(date: dt.date, candidate_ids=None):
     best_val = None
     for d in qs.values("id"):
         c = counts.get(d["id"], 0)
-        if best_val is None or c < best_val or (c == best_val and d["id"] < best):
+        if best_val is None or c < best_val or (
+            c == best_val and d["id"] < best):
             best, best_val = d["id"], c
     return best
-
-
-
 
 
 def _fnum(x):
@@ -657,7 +727,8 @@ def _entry_service_date(e):
     for attr in ("date", "service_date", "scheduled_for"):
         val = getattr(e, attr, None)
         if val:
-            return getattr(val, "date", val)  # if it's a model with .date, use that
+            # if it's a model with .date, use that
+            return getattr(val, "date", val)
 
     # nested objects that commonly hold a date
     if hasattr(e, "day") and getattr(e.day, "date", None):
@@ -713,14 +784,26 @@ def serialize_autoschedule(s):
     )
 
     start_lat = _fnum(
-        getattr(s, "start_latitude", None) or getattr(s.client, "pickup_latitude", None)
+        getattr(
+    s,
+    "start_latitude",
+    None) or getattr(
+        s.client,
+        "pickup_latitude",
+         None)
     )
     start_lng = _fnum(
         getattr(s, "start_longitude", None)
         or getattr(s.client, "pickup_longitude", None)
     )
     end_lat = _fnum(
-        getattr(s, "end_latitude", None) or getattr(s.client, "dropoff_latitude", None)
+        getattr(
+    s,
+    "end_latitude",
+    None) or getattr(
+        s.client,
+        "dropoff_latitude",
+         None)
     )
     end_lng = _fnum(
         getattr(s, "end_longitude", None)
@@ -771,7 +854,8 @@ def features_for_autoschedule(s):
         )
     if slat is not None and slng is not None and elat is not None and elng is not None:
         f.append(
-            {"type": "line", "coords": [[slat, slng], [elat, elng]], "trip_id": d["id"]}
+            {"type": "line", "coords": [
+                [slat, slng], [elat, elng]], "trip_id": d["id"]}
         )
     return f
 
@@ -808,13 +892,13 @@ def session_view(request):
     )
 
 
-
 # /service/dev/force-login/?u=<username>
 def force_login(request):
     User = get_user_model()
     username = request.GET.get("u", "").strip()
     if not username:
-        return JsonResponse({"ok": False, "error": "provide ?u=<username>"}, status=400)
+        return JsonResponse(
+            {"ok": False, "error": "provide ?u=<username>"}, status=400)
 
     user = User.objects.filter(username=username).first()
     if not user:
@@ -839,9 +923,6 @@ def force_login(request):
 # Authentication & Home
 # ==============================
 
-
-from django.shortcuts import redirect
-from django.urls import reverse
 
 @ensure_csrf_cookie
 def user_login(request):
@@ -896,7 +977,6 @@ def user_login(request):
     return redirect("/service/")
 
 
-
 @require_POST
 @csrf_protect
 def logout_api(request):
@@ -910,15 +990,14 @@ def user_logout(request):
     return HttpResponseRedirect("/service/")
 
 
-
 # scheduler/views.py (home)
-from django.utils import timezone
-from django.shortcuts import render
-from django.db.models import Prefetch
+
+
 @login_required
 @ensure_csrf_cookie
 def home(request):
-    from .models import ScheduleEntry, Client, Driver  # adjust imports to your app layout
+    # adjust imports to your app layout
+    from .models import ScheduleEntry, Client, Driver
 
     today = timezone.localdate()
 
@@ -939,22 +1018,40 @@ def home(request):
     rows = []
     for e in qs:
         # names
-        client_name = first(getattr(e.client, "name", None), getattr(e, "client_name", None)) or "—"
+        client_name = first(
+    getattr(
+        e.client, "name", None), getattr(
+            e, "client_name", None)) or "—"
         driver_name = getattr(e.driver, "name", None) or "—"
 
         # labels (prefer entry, then client)
         pickup_label = first(
             getattr(e, "pickup_address", None),
-            getattr(e.client, "pickup_address", None) if getattr(e, "client", None) else None,
+            getattr(
+    e.client,
+    "pickup_address",
+    None) if getattr(
+        e,
+        "client",
+         None) else None,
         ) or "—"
 
         dropoff_label = first(
             getattr(e, "dropoff_address", None),
-            getattr(e.client, "dropoff_address", None) if getattr(e, "client", None) else None,
+            getattr(
+    e.client,
+    "dropoff_address",
+    None) if getattr(
+        e,
+        "client",
+         None) else None,
         ) or "—"
 
         # time (normalize to a single string)
-        t = first(getattr(e, "start_time", None), getattr(e, "pickup_time", None))
+        t = first(
+    getattr(
+        e, "start_time", None), getattr(
+            e, "pickup_time", None))
         time_str = t.strftime("%-I:%M %p") if t else "—"
         # On Windows (dev), use: t.strftime("%I:%M %p").lstrip("0")
 
@@ -978,8 +1075,6 @@ def home(request):
     return render(request, "scheduler/home.html", ctx)
 
 
-
-
 def me(request):
     Driver = apps.get_model("scheduler", "Driver")
     if not request.user.is_authenticated:
@@ -1001,8 +1096,7 @@ def me(request):
 
 
 # at top of views.py
-import datetime as _dt
-from django.utils.dateparse import parse_date as _parse_django
+
 
 def _parse_any_date(s: str | None):
     if not s:
@@ -1019,7 +1113,6 @@ def _parse_any_date(s: str | None):
     return None
 
 
-
 def _resolve_company(request, data):
     """
     Best-effort company resolution:
@@ -1027,7 +1120,10 @@ def _resolve_company(request, data):
       2) request.user.driver.company
       3) single-tenant fallback (only 1 Company exists)
     """
-    cid = (data.get("company_id") or data.get("company")) if isinstance(data, dict) else None
+    cid = (
+    data.get("company_id") or data.get("company")) if isinstance(
+        data,
+         dict) else None
     if cid:
         try:
             return Company.objects.get(id=int(cid))
@@ -1043,7 +1139,8 @@ def _resolve_company(request, data):
     if Company.objects.count() == 1:
         return Company.objects.first()
 
-    raise ValueError("Cannot resolve company. Pass 'company_id' or link user→driver→company.")
+    raise ValueError(
+        "Cannot resolve company. Pass 'company_id' or link user→driver→company.")
 
 
 @staff_member_required
@@ -1057,10 +1154,12 @@ def generate_schedule_view(request):
             the_date = form.cleaned_data["date"]
             force = form.cleaned_data["force"]
 
-            # If you later attach users to companies, swap this for _resolve_company.
+            # If you later attach users to companies, swap this for
+            # _resolve_company.
             company = Company.objects.get(pk=1)
 
-            ok, msg = materialize_schedule_for_date(company.id, the_date, force=force)
+            ok, msg = materialize_schedule_for_date(
+                company.id, the_date, force=force)
             if ok:
                 messages.success(request, msg)
             else:
@@ -1074,19 +1173,10 @@ def generate_schedule_view(request):
 
 
 # scheduler/views.py
-import json
-from datetime import timedelta
-from django.http import JsonResponse, HttpResponseBadRequest
-from django.utils import timezone
-from django.views.decorators.http import require_POST
-from django.views.decorators.csrf import ensure_csrf_cookie, csrf_exempt
-from django.contrib.auth.decorators import login_required, user_passes_test
-from django.db import transaction
-from django.db.models import Q
 
-from .models import Schedule, ScheduleEntry, Driver  # make sure these exist
 
 WEEKDAY_NAMES = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+
 
 def _parse_date_yyyy_mm_dd(s):
     try:
@@ -1094,12 +1184,14 @@ def _parse_date_yyyy_mm_dd(s):
     except Exception:
         return None
 
+
 def _weekday_name_to_index(name):
     name = (name or "").strip().lower()[:3]
     try:
         return ["mon", "tue", "wed", "thu", "fri"].index(name)
     except ValueError:
         return None
+
 
 def _find_source_date_for_weekday(target_date, weekday_index):
     """
@@ -1117,16 +1209,20 @@ def _find_source_date_for_weekday(target_date, weekday_index):
         day -= timedelta(days=1)
     return None
 
+
 def _get_or_create_schedule_for_date(day):
-    sch, _ = Schedule.objects.get_or_create(date=day, defaults={"status": "draft"})
+    sch, _ = Schedule.objects.get_or_create(
+        date=day, defaults={"status": "draft"})
     return sch
+
 
 def _copy_row_fields(src: ScheduleEntry, dst: ScheduleEntry):
     """
     Copy the fields we want from source row to destination row, excluding FK schedule/id.
     Keep driver if present. Normalize status/time as desired.
     """
-    # Simple field-by-field copy with safety (only copy if the field exists on model)
+    # Simple field-by-field copy with safety (only copy if the field exists on
+    # model)
     for fld in [
         "client",        # FK might exist; if your model uses client_name, adapt here
         "client_name",   # optional text fallback
@@ -1148,21 +1244,23 @@ def _copy_row_fields(src: ScheduleEntry, dst: ScheduleEntry):
     dst.status = "planned"
 
 
-import re
-from datetime import datetime
-from typing import Optional, Dict
-
 TIME_RE = re.compile(r"^(?:[01]?\d|2[0-3]):[0-5]\d$")
 DATE_RE = re.compile(r"^\d{1,2}/\d{1,2}/\d{4}$")
 PHONE_RE = re.compile(r"^\(?\d{3}\)?[-\s]?\d{3}[-\s]?\d{4}$", re.ASCII)
 
 STOP_TOKENS = {"LOGISTICARE"}  # add more if needed
 
+
 def _is_number_token(t: str) -> bool:
     return t.isdigit()
 
+
 def _is_stop_token(t: str) -> bool:
-    return t.upper() in STOP_TOKENS or bool(DATE_RE.match(t)) or bool(TIME_RE.match(t)) or bool(PHONE_RE.match(t))
+    return t.upper() in STOP_TOKENS or bool(
+    DATE_RE.match(t)) or bool(
+        TIME_RE.match(t)) or bool(
+            PHONE_RE.match(t))
+
 
 def _split_tokens(line: str) -> list[str]:
     # normalize weird “7OAKLAND” -> “7 OAKLAND”
@@ -1171,10 +1269,12 @@ def _split_tokens(line: str) -> list[str]:
     line = re.sub(r"\s+", " ", line.strip())
     return line.split(" ")
 
+
 def _parse_line(line: str) -> Optional[Dict]:
     """
     Returns dict with fields:
-      route_token, date (optional), time, member, pu_addr, pu_city, do_addr, do_city
+      route_token, date (
+          optional), time, member, pu_addr, pu_city, do_addr, do_city
     or None if not parseable.
     """
     if not line.strip():
@@ -1183,7 +1283,8 @@ def _parse_line(line: str) -> Optional[Dict]:
     if not toks:
         return None
 
-    # 1) route token is first two tokens if second is like "1A"/"2"/"5B"; otherwise first is enough
+    # 1) route token is first two tokens if second is like "1A"/"2"/"5B";
+    # otherwise first is enough
     route = toks[0]
     i = 1
     if i < len(toks) and re.match(r"^\d+[A-Za-z]?$", toks[i]):
@@ -1205,7 +1306,8 @@ def _parse_line(line: str) -> Optional[Dict]:
             return None
     trip_time = toks[i]; i += 1
 
-    # 4) member: consume tokens until we hit first numeric token (start of pickup address)
+    # 4) member: consume tokens until we hit first numeric token (start of
+    # pickup address)
     member_start = i
     while i < len(toks) and not _is_number_token(toks[i]):
         # stop early if noise header appears
@@ -1229,7 +1331,8 @@ def _parse_line(line: str) -> Optional[Dict]:
     if len(pu_seg) < 2:
         return None
     pu_city = pu_seg[-1].title()
-    pu_addr = " ".join(pu_seg[:-1]).title()  # "17 BAYBERRY ROAD" -> "17 Bayberry Road"
+    # "17 BAYBERRY ROAD" -> "17 Bayberry Road"
+    pu_addr = " ".join(pu_seg[:-1]).title()
 
     # 6) dropoff segment: must start with a number; if not, bail
     if i < len(toks) and _is_number_token(toks[i]):
@@ -1266,10 +1369,10 @@ def _parse_line(line: str) -> Optional[Dict]:
     }
 
 
-from scheduler.models import ScheduleEntry, Client, Driver
-
 def _parse_time_hm(t: str):
-    return datetime.strptime(t, "%H:%M").time() if ":" in t and len(t) <= 5 else datetime.strptime(t, "%H:%M").time()
+    return datetime.strptime(t, "%H:%M").time() if ":" in t and len(
+        t) <= 5 else datetime.strptime(t, "%H:%M").time()
+
 
 def load_schedule_txt(text: str, schedule, driver_map: dict[str, Driver]):
     """
@@ -1321,10 +1424,12 @@ def generate_schedule(request):
         "from_template": true|false,       # default true
         "from_standing": true|false,       # default true
         "force": false,                    # default false; when false, guard prevents duplicates
-        "dry_run": false                   # default false; when true, do not write, just return would-be summary
+        # default false; when true, do not write, just return would-be summary
+        "dry_run": false
       }
     """
-    import json, re
+    import json
+    import re
     from datetime import timedelta
     from django.apps import apps
     from django.db.models import Max, Q
@@ -1332,15 +1437,16 @@ def generate_schedule(request):
     # ---- helpers (same as your version; trimmed for brevity) ----
     MULTI_WS = re.compile(r"\s+")
     def _is_blank(s): return s is None or str(s).strip() in {"", "-", "—"}
-    def _norm_space(s): return None if s is None else MULTI_WS.sub(" ", s).strip()
-    def _norm(s): return (_norm_space(s) or "").lower()
-   
+    def _norm_space(s): return None if s is None else MULTI_WS.sub(
+        " ", s).strip()
 
-    
+    def _norm(s): return (_norm_space(s) or "").lower()
+
     def _norm_space(s):
         if s is None:
             return None
         return MULTI_WS.sub(" ", str(s)).strip()
+
     def _is_blank(s):
         return s is None or _norm_space(s) in {"", "-", "—"}
     TIME_TOKEN = re.compile(r"\b([01]?\d|2[0-3]):[0-5]\d\b")
@@ -1348,12 +1454,14 @@ def generate_schedule(request):
         r"\b(ERNEST|STEVE|WILLIAM|KENNEDY|JOCK|TONY|SAMMY|JOSHUA|CHARLES|DAVID|WAIYAKI|MUNIU|GUDOYI)\b",
         re.I,
     )
+
     def _strip_noise(s):
         if not s:
             return s
         s = DRIVER_TOKENS.sub(" ", str(s))
         s = TIME_TOKEN.sub(" ", s)
         return _norm_space(s)
+
     def _best(*candidates):
         for c in candidates:
             c = _strip_noise(c)
@@ -1396,26 +1504,42 @@ def generate_schedule(request):
         try:
             data = json.loads(request.body.decode("utf-8") or "{}")
         except json.JSONDecodeError:
-            return JsonResponse({"ok": False, "error": "Body must be valid JSON"}, status=400)
+            return JsonResponse(
+                {"ok": False, "error": "Body must be valid JSON"}, status=400)
     else:
         data = request.POST
 
-    day = parse_date((data.get("date") or data.get("target_date") or "").strip())
+    day = parse_date(
+    (data.get("date") or data.get("target_date") or "").strip())
     if not day:
-        return JsonResponse({"ok": False, "error": "Missing or invalid 'date' (YYYY-MM-DD)."}, status=400)
+        return JsonResponse(
+            {"ok": False, "error": "Missing or invalid 'date' (YYYY-MM-DD)."}, status=400)
 
     mode = _norm(data.get("mode") or "replace")
     if mode not in {"replace", "append", "sync"}:
         mode = "replace"
 
-    from_template = str(data.get("from_template", "true")).lower() in {"1","true","yes"}
-    from_standing = str(data.get("from_standing", "true")).lower() in {"1","true","yes"}
-    force         = str(data.get("force", "false")).lower() in {"1","true","yes"}
-    dry_run       = str(data.get("dry_run", "false")).lower() in {"1","true","yes"}
+    from_template = str(
+    data.get(
+        "from_template",
+        "true")).lower() in {
+            "1",
+            "true",
+             "yes"}
+    from_standing = str(
+    data.get(
+        "from_standing",
+        "true")).lower() in {
+            "1",
+            "true",
+             "yes"}
+    force = str(data.get("force", "false")).lower() in {"1", "true", "yes"}
+    dry_run = str(data.get("dry_run", "false")).lower() in {"1", "true", "yes"}
 
     # only Mon–Fri (keep your business rule)
     if day.weekday() >= 5:
-        return JsonResponse({"ok": False, "error": "Static schedules only run Mon–Fri."}, status=400)
+        return JsonResponse(
+            {"ok": False, "error": "Static schedules only run Mon–Fri."}, status=400)
 
     company = _get_or_create_company()
 
@@ -1427,10 +1551,11 @@ def generate_schedule(request):
         fk_schedule = None
         schedule_obj = None
     else:
-        Schedule      = _get_model("scheduler", "Schedule")
+        Schedule = _get_model("scheduler", "Schedule")
         ScheduleEntry = _get_model("scheduler", "ScheduleEntry")
         if not (Schedule and ScheduleEntry):
-            return JsonResponse({"ok": False, "error": "Schedule models not available."}, status=400)
+            return JsonResponse(
+                {"ok": False, "error": "Schedule models not available."}, status=400)
         EntryModel = ScheduleEntry
         entry_date_field = "schedule__date"
         fk_schedule = "schedule"
@@ -1439,7 +1564,8 @@ def generate_schedule(request):
     entry_fields = _entry_fields(EntryModel)
 
     # ---- DUPLICATE-GENERATION GUARD ----
-    # If there are already entries for this date, block append/sync unless forced.
+    # If there are already entries for this date, block append/sync unless
+    # forced.
     filt = {entry_date_field: day}
     if "company" in entry_fields and company is not None:
         filt["company"] = company
@@ -1463,7 +1589,7 @@ def generate_schedule(request):
                 "from_template": from_template,
                 "from_standing": from_standing,
                 "existing_for_date": existing_count,
-                "action": ("delete_then_create" if mode=="replace" else "create_without_duplicates")
+                "action": ("delete_then_create" if mode == "replace" else "create_without_duplicates")
             }
         })
 
@@ -1474,10 +1600,16 @@ def generate_schedule(request):
     # ---- Build the 'existing signatures' set for sync/append ----
     existing = set()
     if mode in {"sync", "append"}:
-        fields_for_only = [f for f in ("client_name","start_time","pickup_address","dropoff_address") if f in entry_fields]
+        fields_for_only = [
+    f for f in (
+        "client_name",
+        "start_time",
+        "pickup_address",
+         "dropoff_address") if f in entry_fields]
         qs_existing = EntryModel.objects.filter(**filt)
         if fields_for_only:
             qs_existing = qs_existing.only(*fields_for_only)
+
         def _norm(s): return (s or "").strip().lower()
         for e in qs_existing:
             sig = (_norm(getattr(e, "client_name", "")),
@@ -1486,10 +1618,9 @@ def generate_schedule(request):
                    _norm(getattr(e, "dropoff_address", "")))
             existing.add(sig)
 
-
     def _weekday_template(company, weekday):
         Template = _get_model("scheduler", "ScheduleTemplate")
-        TEntry   = _get_model("scheduler", "ScheduleTemplateEntry")
+        TEntry = _get_model("scheduler", "ScheduleTemplateEntry")
         if not (Template and TEntry):
             return (None, None)
         qs = Template.objects.all()
@@ -1510,7 +1641,8 @@ def generate_schedule(request):
         qs = SOrder.objects.all()
         if "active" in s_fields:
             qs = qs.filter(active=True)
-        # weekday convention: Python Mon=0..Sun=6. Align with your field semantics
+        # weekday convention: Python Mon=0..Sun=6. Align with your field
+        # semantics
         if "weekday" in s_fields:
             qs = qs.filter(weekday=weekday)
         if "company" in s_fields and company is not None:
@@ -1526,7 +1658,13 @@ def generate_schedule(request):
             return c
         return Client.objects.filter(name__iexact=name).first()
 
-    def _set_field(payload, EntryModel, efields, field_name, value, default_if_null=""):
+    def _set_field(
+    payload,
+    EntryModel,
+    efields,
+    field_name,
+    value,
+     default_if_null=""):
         """
         Put field_name -> value into payload iff EntryModel has the field.
         If value is None and the DB column is NOT NULL, coerce to default_if_null.
@@ -1558,7 +1696,8 @@ def generate_schedule(request):
         if "client_name" not in efields:
             return {}
 
-        base_q = base_q.exclude(Q(client_name__isnull=True) | Q(client_name=""))
+        base_q = base_q.exclude(
+            Q(client_name__isnull=True) | Q(client_name=""))
         rows = base_q.values("client_name").annotate(latest=Max("id"))
 
         id_to_name, latest_map = {}, {}
@@ -1573,19 +1712,30 @@ def generate_schedule(request):
                     latest_map[nm] = obj
         return latest_map
 
-    def _resolve_driver_for(EntryModel, efields, *, template_obj=None, standing_obj=None, client_name=None, company=None, day=None):
+    def _resolve_driver_for(
+    EntryModel,
+    efields,
+    *,
+    template_obj=None,
+    standing_obj=None,
+    client_name=None,
+    company=None,
+     day=None):
         """Prefer explicit FK from template/standing order, else latest same-client driver."""
         # 1) Explicit FK (template)
-        if template_obj is not None and hasattr(template_obj, "driver_id") and template_obj.driver_id:
+        if template_obj is not None and hasattr(
+    template_obj, "driver_id") and template_obj.driver_id:
             if "driver" in efields:
                 return template_obj.driver
         # 2) Explicit FK (standing)
-        if standing_obj is not None and hasattr(standing_obj, "driver_id") and standing_obj.driver_id:
+        if standing_obj is not None and hasattr(
+    standing_obj, "driver_id") and standing_obj.driver_id:
             if "driver" in efields:
                 return standing_obj.driver
         # 3) Latest recent driver for this client
         if client_name and "client_name" in efields and "driver" in efields:
-            q = EntryModel.objects.filter(client_name=client_name, driver__isnull=False)
+            q = EntryModel.objects.filter(
+    client_name=client_name, driver__isnull=False)
             if "company" in efields and company is not None:
                 q = q.filter(company=company)
             if "schedule" in efields and day is not None:
@@ -1601,24 +1751,40 @@ def generate_schedule(request):
         try:
             data = json.loads(request.body.decode("utf-8") or "{}")
         except json.JSONDecodeError:
-            return JsonResponse({"ok": False, "error": "Body must be valid JSON"}, status=400)
+            return JsonResponse(
+                {"ok": False, "error": "Body must be valid JSON"}, status=400)
     else:
         data = request.POST
 
-    day = parse_date((data.get("date") or data.get("target_date") or "").strip())
+    day = parse_date(
+    (data.get("date") or data.get("target_date") or "").strip())
     if not day:
-        return JsonResponse({"ok": False, "error": "Missing or invalid 'date' (YYYY-MM-DD)."}, status=400)
+        return JsonResponse(
+            {"ok": False, "error": "Missing or invalid 'date' (YYYY-MM-DD)."}, status=400)
 
     # Only Mon–Fri
     if day.weekday() >= 5:
-        return JsonResponse({"ok": False, "error": "Static schedules only run Mon–Fri."}, status=400)
+        return JsonResponse(
+            {"ok": False, "error": "Static schedules only run Mon–Fri."}, status=400)
 
     mode = _norm(data.get("mode") or "replace")
     if mode not in {"replace", "append", "sync"}:
         mode = "replace"
 
-    from_template = str(data.get("from_template", "true")).lower() in {"1", "true", "yes"}
-    from_standing = str(data.get("from_standing", "true")).lower() in {"1", "true", "yes"}
+    from_template = str(
+    data.get(
+        "from_template",
+        "true")).lower() in {
+            "1",
+            "true",
+             "yes"}
+    from_standing = str(
+    data.get(
+        "from_standing",
+        "true")).lower() in {
+            "1",
+            "true",
+             "yes"}
 
     company = _get_or_create_company()
 
@@ -1630,10 +1796,11 @@ def generate_schedule(request):
         fk_schedule = None
         schedule_obj = None
     else:
-        Schedule      = _get_model("scheduler", "Schedule")
+        Schedule = _get_model("scheduler", "Schedule")
         ScheduleEntry = _get_model("scheduler", "ScheduleEntry")
         if not (Schedule and ScheduleEntry):
-            return JsonResponse({"ok": False, "error": "Schedule models not available."}, status=400)
+            return JsonResponse(
+                {"ok": False, "error": "Schedule models not available."}, status=400)
         EntryModel = ScheduleEntry
         entry_date_field = "schedule__date"
         fk_schedule = "schedule"
@@ -1655,7 +1822,12 @@ def generate_schedule(request):
         if "company" in entry_fields and company is not None:
             filt["company"] = company
         # Only include fields that exist on the model
-        fields_for_only = [f for f in ("client_name", "start_time", "pickup_address", "dropoff_address") if f in entry_fields]
+        fields_for_only = [
+    f for f in (
+        "client_name",
+        "start_time",
+        "pickup_address",
+         "dropoff_address") if f in entry_fields]
         qs_existing = EntryModel.objects.filter(**filt)
         if fields_for_only:
             qs_existing = qs_existing.only(*fields_for_only)
@@ -1692,42 +1864,92 @@ def generate_schedule(request):
             for te in tqs:
                 # client
                 client_name = getattr(te, "client_name", None)
-                client_obj  = getattr(te, "client", None) if hasattr(te, "client") else None
+                client_obj = getattr(
+    te, "client", None) if hasattr(
+        te, "client") else None
                 if not client_name and client_obj:
                     client_name = getattr(client_obj, "name", None)
 
                 # addresses (template → client defaults → last time)
-                t_pick  = getattr(te, "pickup_address", None)  if hasattr(te, "pickup_address")  else None
-                t_drop  = getattr(te, "dropoff_address", None) if hasattr(te, "dropoff_address") else None
-                t_pcity = getattr(te, "pickup_city", None)     if hasattr(te, "pickup_city")     else None
-                t_dcity = getattr(te, "dropoff_city", None)    if hasattr(te, "dropoff_city")    else None
-                t_pst   = getattr(te, "pickup_state", None)    if hasattr(te, "pickup_state")    else None
-                t_dst   = getattr(te, "dropoff_state", None)   if hasattr(te, "dropoff_state")   else None
+                t_pick = getattr(
+    te, "pickup_address", None) if hasattr(
+        te, "pickup_address") else None
+                t_drop = getattr(
+    te, "dropoff_address", None) if hasattr(
+        te, "dropoff_address") else None
+                t_pcity = getattr(
+    te, "pickup_city", None) if hasattr(
+        te, "pickup_city") else None
+                t_dcity = getattr(
+    te, "dropoff_city", None) if hasattr(
+        te, "dropoff_city") else None
+                t_pst = getattr(
+    te, "pickup_state", None) if hasattr(
+        te, "pickup_state") else None
+                t_dst = getattr(
+    te, "dropoff_state", None) if hasattr(
+        te, "dropoff_state") else None
 
                 if not client_obj and client_name:
                     client_obj = _get_client_by_name(client_name)
 
-                c_padr  = getattr(client_obj, "default_pickup_address", None)  if client_obj else None
-                c_dadr  = getattr(client_obj, "default_dropoff_address", None) if client_obj else None
-                c_pcity = getattr(client_obj, "pickup_city", None)            if client_obj and hasattr(client_obj, "pickup_city") else None
-                c_dcity = getattr(client_obj, "dropoff_city", None)           if client_obj and hasattr(client_obj, "dropoff_city") else None
-                c_pst   = getattr(client_obj, "pickup_state", None)           if client_obj and hasattr(client_obj, "pickup_state") else None
-                c_dst   = getattr(client_obj, "dropoff_state", None)          if client_obj and hasattr(client_obj, "dropoff_state") else None
+                c_padr = getattr(
+    client_obj,
+    "default_pickup_address",
+     None) if client_obj else None
+                c_dadr = getattr(
+    client_obj,
+    "default_dropoff_address",
+     None) if client_obj else None
+                c_pcity = getattr(
+    client_obj,
+    "pickup_city",
+    None) if client_obj and hasattr(
+        client_obj,
+         "pickup_city") else None
+                c_dcity = getattr(
+    client_obj,
+    "dropoff_city",
+    None) if client_obj and hasattr(
+        client_obj,
+         "dropoff_city") else None
+                c_pst = getattr(
+    client_obj,
+    "pickup_state",
+    None) if client_obj and hasattr(
+        client_obj,
+         "pickup_state") else None
+                c_dst = getattr(
+    client_obj,
+    "dropoff_state",
+    None) if client_obj and hasattr(
+        client_obj,
+         "dropoff_state") else None
 
-                last    = latest_map.get(client_name or "")
-                l_padr  = getattr(last, "pickup_address", None)  if last else None
-                l_dadr  = getattr(last, "dropoff_address", None) if last else None
-                l_pcity = getattr(last, "pickup_city", None)     if last and hasattr(last, "pickup_city") else None
-                l_dcity = getattr(last, "dropoff_city", None)    if last and hasattr(last, "dropoff_city") else None
-                l_pst   = getattr(last, "pickup_state", None)    if last and hasattr(last, "pickup_state") else None
-                l_dst   = getattr(last, "dropoff_state", None)   if last and hasattr(last, "dropoff_state") else None
+                last = latest_map.get(client_name or "")
+                l_padr = getattr(
+    last, "pickup_address", None) if last else None
+                l_dadr = getattr(
+    last, "dropoff_address", None) if last else None
+                l_pcity = getattr(
+    last, "pickup_city", None) if last and hasattr(
+        last, "pickup_city") else None
+                l_dcity = getattr(
+    last, "dropoff_city", None) if last and hasattr(
+        last, "dropoff_city") else None
+                l_pst = getattr(
+    last, "pickup_state", None) if last and hasattr(
+        last, "pickup_state") else None
+                l_dst = getattr(
+    last, "dropoff_state", None) if last and hasattr(
+        last, "dropoff_state") else None
 
-                pickup_address  = _best(t_pick,  c_padr, l_padr)
-                dropoff_address = _best(t_drop,  c_dadr, l_dadr)
-                pickup_city     = _best(t_pcity, c_pcity, l_pcity)
-                dropoff_city    = _best(t_dcity, c_dcity, l_dcity)
-                pickup_state    = _best(t_pst,   c_pst,  l_pst)
-                dropoff_state   = _best(t_dst,   c_dst,  l_dst)
+                pickup_address = _best(t_pick, c_padr, l_padr)
+                dropoff_address = _best(t_drop, c_dadr, l_dadr)
+                pickup_city = _best(t_pcity, c_pcity, l_pcity)
+                dropoff_city = _best(t_dcity, c_dcity, l_dcity)
+                pickup_state = _best(t_pst, c_pst, l_pst)
+                dropoff_state = _best(t_dst, c_dst, l_dst)
 
                 # Build payload
                 payload = {}
@@ -1761,12 +1983,48 @@ def generate_schedule(request):
                     elif hasattr(te, "pickup_time"):
                         payload["start_time"] = getattr(te, "pickup_time")
 
-                _set_field(payload, EntryModel, entry_fields, "pickup_address",  pickup_address,  "")
-                _set_field(payload, EntryModel, entry_fields, "dropoff_address", dropoff_address, "")
-                _set_field(payload, EntryModel, entry_fields, "pickup_city",     pickup_city,     "")
-                _set_field(payload, EntryModel, entry_fields, "dropoff_city",    dropoff_city,    "")
-                _set_field(payload, EntryModel, entry_fields, "pickup_state",    pickup_state,    "")
-                _set_field(payload, EntryModel, entry_fields, "dropoff_state",   dropoff_state,   "")
+                _set_field(
+    payload,
+    EntryModel,
+    entry_fields,
+    "pickup_address",
+    pickup_address,
+     "")
+                _set_field(
+    payload,
+    EntryModel,
+    entry_fields,
+    "dropoff_address",
+    dropoff_address,
+     "")
+                _set_field(
+    payload,
+    EntryModel,
+    entry_fields,
+    "pickup_city",
+    pickup_city,
+     "")
+                _set_field(
+    payload,
+    EntryModel,
+    entry_fields,
+    "dropoff_city",
+    dropoff_city,
+     "")
+                _set_field(
+    payload,
+    EntryModel,
+    entry_fields,
+    "pickup_state",
+    pickup_state,
+     "")
+                _set_field(
+    payload,
+    EntryModel,
+    entry_fields,
+    "dropoff_state",
+    dropoff_state,
+     "")
 
                 sig = (
                     _norm(payload.get("client_name", "") or client_name or ""),
@@ -1790,7 +2048,9 @@ def generate_schedule(request):
                 "mode": mode,
             }
         else:
-            template_info = {"applied": False, "message": "No active weekday template for this date."}
+            template_info = {
+    "applied": False,
+     "message": "No active weekday template for this date."}
 
     # --------- APPLY STANDING ORDERS (if any) ---------
     standing_info = {"applied": False, "message": "no standing orders used"}
@@ -1798,45 +2058,96 @@ def generate_schedule(request):
         s_qs, SOrder = _standing_orders_for_weekday(company, day.weekday())
         if s_qs is not None:
             # avoid duplicates against what we already created today
-            for so in s_qs.select_related("client", "driver", "vehicle").order_by("id"):
+            for so in s_qs.select_related(
+    "client", "driver", "vehicle").order_by("id"):
                 # client
                 client_name = getattr(so, "client_name", None)
-                client_obj  = getattr(so, "client", None) if hasattr(so, "client") else None
+                client_obj = getattr(
+    so, "client", None) if hasattr(
+        so, "client") else None
                 if not client_name and client_obj:
                     client_name = getattr(client_obj, "name", None)
 
                 # addresses (standing → client defaults → last time)
-                s_pick  = getattr(so, "pickup_address", None)  if hasattr(so, "pickup_address")  else None
-                s_drop  = getattr(so, "dropoff_address", None) if hasattr(so, "dropoff_address") else None
-                s_pcity = getattr(so, "pickup_city", None)     if hasattr(so, "pickup_city")     else None
-                s_dcity = getattr(so, "dropoff_city", None)    if hasattr(so, "dropoff_city")    else None
-                s_pst   = getattr(so, "pickup_state", None)    if hasattr(so, "pickup_state")    else None
-                s_dst   = getattr(so, "dropoff_state", None)   if hasattr(so, "dropoff_state")   else None
+                s_pick = getattr(
+    so, "pickup_address", None) if hasattr(
+        so, "pickup_address") else None
+                s_drop = getattr(
+    so, "dropoff_address", None) if hasattr(
+        so, "dropoff_address") else None
+                s_pcity = getattr(
+    so, "pickup_city", None) if hasattr(
+        so, "pickup_city") else None
+                s_dcity = getattr(
+    so, "dropoff_city", None) if hasattr(
+        so, "dropoff_city") else None
+                s_pst = getattr(
+    so, "pickup_state", None) if hasattr(
+        so, "pickup_state") else None
+                s_dst = getattr(
+    so, "dropoff_state", None) if hasattr(
+        so, "dropoff_state") else None
 
                 if not client_obj and client_name:
                     client_obj = _get_client_by_name(client_name)
 
-                c_padr  = getattr(client_obj, "default_pickup_address", None)  if client_obj else None
-                c_dadr  = getattr(client_obj, "default_dropoff_address", None) if client_obj else None
-                c_pcity = getattr(client_obj, "pickup_city", None)            if client_obj and hasattr(client_obj, "pickup_city") else None
-                c_dcity = getattr(client_obj, "dropoff_city", None)           if client_obj and hasattr(client_obj, "dropoff_city") else None
-                c_pst   = getattr(client_obj, "pickup_state", None)           if client_obj and hasattr(client_obj, "pickup_state") else None
-                c_dst   = getattr(client_obj, "dropoff_state", None)          if client_obj and hasattr(client_obj, "dropoff_state") else None
+                c_padr = getattr(
+    client_obj,
+    "default_pickup_address",
+     None) if client_obj else None
+                c_dadr = getattr(
+    client_obj,
+    "default_dropoff_address",
+     None) if client_obj else None
+                c_pcity = getattr(
+    client_obj,
+    "pickup_city",
+    None) if client_obj and hasattr(
+        client_obj,
+         "pickup_city") else None
+                c_dcity = getattr(
+    client_obj,
+    "dropoff_city",
+    None) if client_obj and hasattr(
+        client_obj,
+         "dropoff_city") else None
+                c_pst = getattr(
+    client_obj,
+    "pickup_state",
+    None) if client_obj and hasattr(
+        client_obj,
+         "pickup_state") else None
+                c_dst = getattr(
+    client_obj,
+    "dropoff_state",
+    None) if client_obj and hasattr(
+        client_obj,
+         "dropoff_state") else None
 
-                last    = latest_map.get(client_name or "")
-                l_padr  = getattr(last, "pickup_address", None)  if last else None
-                l_dadr  = getattr(last, "dropoff_address", None) if last else None
-                l_pcity = getattr(last, "pickup_city", None)     if last and hasattr(last, "pickup_city") else None
-                l_dcity = getattr(last, "dropoff_city", None)    if last and hasattr(last, "dropoff_city") else None
-                l_pst   = getattr(last, "pickup_state", None)    if last and hasattr(last, "pickup_state") else None
-                l_dst   = getattr(last, "dropoff_state", None)   if last and hasattr(last, "dropoff_state") else None
+                last = latest_map.get(client_name or "")
+                l_padr = getattr(
+    last, "pickup_address", None) if last else None
+                l_dadr = getattr(
+    last, "dropoff_address", None) if last else None
+                l_pcity = getattr(
+    last, "pickup_city", None) if last and hasattr(
+        last, "pickup_city") else None
+                l_dcity = getattr(
+    last, "dropoff_city", None) if last and hasattr(
+        last, "dropoff_city") else None
+                l_pst = getattr(
+    last, "pickup_state", None) if last and hasattr(
+        last, "pickup_state") else None
+                l_dst = getattr(
+    last, "dropoff_state", None) if last and hasattr(
+        last, "dropoff_state") else None
 
-                pickup_address  = _best(s_pick,  c_padr, l_padr)
-                dropoff_address = _best(s_drop,  c_dadr, l_dadr)
-                pickup_city     = _best(s_pcity, c_pcity, l_pcity)
-                dropoff_city    = _best(s_dcity, c_dcity, l_dcity)
-                pickup_state    = _best(s_pst,   c_pst,  l_pst)
-                dropoff_state   = _best(s_dst,   c_dst,  l_dst)
+                pickup_address = _best(s_pick, c_padr, l_padr)
+                dropoff_address = _best(s_drop, c_dadr, l_dadr)
+                pickup_city = _best(s_pcity, c_pcity, l_pcity)
+                dropoff_city = _best(s_dcity, c_dcity, l_dcity)
+                pickup_state = _best(s_pst, c_pst, l_pst)
+                dropoff_state = _best(s_dst, c_dst, l_dst)
 
                 # Build payload
                 payload = {}
@@ -1870,12 +2181,48 @@ def generate_schedule(request):
                     elif hasattr(so, "pickup_time"):
                         payload["start_time"] = getattr(so, "pickup_time")
 
-                _set_field(payload, EntryModel, entry_fields, "pickup_address",  pickup_address,  "")
-                _set_field(payload, EntryModel, entry_fields, "dropoff_address", dropoff_address, "")
-                _set_field(payload, EntryModel, entry_fields, "pickup_city",     pickup_city,     "")
-                _set_field(payload, EntryModel, entry_fields, "dropoff_city",    dropoff_city,    "")
-                _set_field(payload, EntryModel, entry_fields, "pickup_state",    pickup_state,    "")
-                _set_field(payload, EntryModel, entry_fields, "dropoff_state",   dropoff_state,   "")
+                _set_field(
+    payload,
+    EntryModel,
+    entry_fields,
+    "pickup_address",
+    pickup_address,
+     "")
+                _set_field(
+    payload,
+    EntryModel,
+    entry_fields,
+    "dropoff_address",
+    dropoff_address,
+     "")
+                _set_field(
+    payload,
+    EntryModel,
+    entry_fields,
+    "pickup_city",
+    pickup_city,
+     "")
+                _set_field(
+    payload,
+    EntryModel,
+    entry_fields,
+    "dropoff_city",
+    dropoff_city,
+     "")
+                _set_field(
+    payload,
+    EntryModel,
+    entry_fields,
+    "pickup_state",
+    pickup_state,
+     "")
+                _set_field(
+    payload,
+    EntryModel,
+    entry_fields,
+    "dropoff_state",
+    dropoff_state,
+     "")
 
                 sig = (
                     _norm(payload.get("client_name", "") or client_name or ""),
@@ -1898,7 +2245,8 @@ def generate_schedule(request):
                 "mode": mode,
             }
         else:
-            standing_info = {"applied": False, "message": "StandingOrder model not available."}
+            standing_info = {"applied": False,
+     "message": "StandingOrder model not available."}
 
     # Count rows for that date
     filt = {entry_date_field: day}
@@ -1945,7 +2293,8 @@ def schedule_entry_set_status(request, pk):
     s.is_completed = new_status
     s.completed_at = timezone.now() if new_status else None
     s.status = (
-        "completed" if new_status else ("in_progress" if s.started_at else "scheduled")
+        "completed" if new_status else (
+    "in_progress" if s.started_at else "scheduled")
     )
     s.save(update_fields=["is_completed", "completed_at", "status"])
 
@@ -1976,10 +2325,13 @@ def schedule_entry_set_status(request, pk):
     return JsonResponse({"result": row}, encoder=DjangoJSONEncoder)
 
 
-from .models import Driver, ScheduleEntry  # ⬅️ use ScheduleEntry now
-
 # Canonical statuses (stored in DB exactly like this: lowercase with spaces)
-ALLOWED_STATUSES = {"scheduled", "en route", "arrived", "completed", "cancelled"}
+ALLOWED_STATUSES = {
+    "scheduled",
+    "en route",
+    "arrived",
+    "completed",
+     "cancelled"}
 
 # Accept common variants and normalize to the canon above
 _STATUS_ALIAS = {
@@ -2004,12 +2356,6 @@ def normalize_status(value: str):
     return _STATUS_ALIAS.get(base)
 
 
-import json
-from django.http import JsonResponse
-from django.views.decorators.http import require_http_methods
-from django.views.decorators.csrf import csrf_exempt
-from .models import ScheduleEntry
-
 @csrf_exempt
 @require_http_methods(["POST", "GET"])
 def update_schedule_status_api(request):
@@ -2018,7 +2364,8 @@ def update_schedule_status_api(request):
         return JsonResponse({"ok": True, "method": "GET"}, status=200)
 
     # POST
-    if request.content_type and "application/json" in (request.content_type or "").lower():
+    if request.content_type and "application/json" in (
+        request.content_type or "").lower():
       try:
         data = json.loads(request.body.decode("utf-8") or "{}")
       except json.JSONDecodeError:
@@ -2030,14 +2377,16 @@ def update_schedule_status_api(request):
     new_status = (data.get("status") or "").lower()
 
     if not entry_id:
-        return JsonResponse({"ok": False, "error": "Missing entry_id"}, status=400)
+        return JsonResponse(
+            {"ok": False, "error": "Missing entry_id"}, status=400)
     if new_status not in ("completed", "arrived", "enroute", "scheduled"):
         return JsonResponse({"ok": False, "error": "Bad status"}, status=400)
 
     try:
         entry = ScheduleEntry.objects.get(pk=int(entry_id))
     except ScheduleEntry.DoesNotExist:
-        return JsonResponse({"ok": False, "error": "Schedule entry not found"}, status=404)
+        return JsonResponse(
+            {"ok": False, "error": "Schedule entry not found"}, status=404)
 
     entry.status = new_status
     entry.save(update_fields=["status"])
@@ -2053,6 +2402,7 @@ def update_schedule_status_api(request):
         status=200,
     )
 
+
 @staff_member_required
 def add_client(request):
     if request.method == "POST":
@@ -2062,7 +2412,8 @@ def add_client(request):
             messages.success(request, "🎉 Client added successfully!")
             return redirect("scheduler:client_list")
         else:
-            messages.error(request, "❌ There was an error with your submission.")
+            messages.error(
+    request, "❌ There was an error with your submission.")
     else:
         form = ClientForm()
     return render(request, "scheduler/add_client.html", {"form": form})
@@ -2077,16 +2428,16 @@ def add_driver(request):
             messages.success(request, "🚚 Driver added successfully!")
             return redirect("scheduler:driver_list")
         else:
-            messages.error(request, "❌ There was an error with your submission.")
+            messages.error(
+    request, "❌ There was an error with your submission.")
     else:
         form = DriverForm()
     return render(request, "scheduler/add_driver.html", {"form": form})
 
 
+# use YOUR actual form; if you don’t have one, replace with a ModelForm
+# for ScheduleEntry
 
-
-# use YOUR actual form; if you don’t have one, replace with a ModelForm for ScheduleEntry
-from .forms import ScheduleEntryForm  # <- ensure this import points to the form you think it does
 
 def _get_or_create_company():
     Company = apps.get_model("scheduler", "Company")
@@ -2094,6 +2445,7 @@ def _get_or_create_company():
         return None
     obj = Company.objects.first()
     return obj or Company.objects.create(name="Default")
+
 
 @login_required
 def add_schedule(request):
@@ -2103,7 +2455,8 @@ def add_schedule(request):
     if request.method == "POST":
         form = ScheduleEntryForm(request.POST)
         if form.is_valid():
-            # ALWAYS set company before saving, regardless of what the form does
+            # ALWAYS set company before saving, regardless of what the form
+            # does
             entry = form.save(commit=False)
             if getattr(entry, "company_id", None) is None:
                 entry.company = _get_or_create_company()
@@ -2117,16 +2470,8 @@ def add_schedule(request):
     return render(request, "scheduler/add_schedule.html", {"form": form})
 
 
-
-from .models import ScheduleEntry
-
 # scheduler/views.py
-import json
-from django.http import JsonResponse
-from django.views.decorators.http import require_http_methods
-from django.views.decorators.csrf import csrf_exempt
-from django.db import transaction
-from .models import ScheduleEntry
+
 
 @csrf_exempt
 @require_http_methods(["GET", "POST"])
@@ -2145,22 +2490,26 @@ def cancel_schedule_entry_v2(request):
         )
 
     # POST: cancel
-    if request.content_type and "application/json" in (request.content_type or "").lower():
+    if request.content_type and "application/json" in (
+        request.content_type or "").lower():
         try:
             data = json.loads(request.body.decode("utf-8") or "{}")
         except json.JSONDecodeError:
-            return JsonResponse({"ok": False, "error": "Invalid JSON"}, status=400)
+            return JsonResponse(
+                {"ok": False, "error": "Invalid JSON"}, status=400)
     else:
         data = request.POST
 
     entry_id = data.get("entry_id")
     if not entry_id:
-        return JsonResponse({"ok": False, "error": "Missing entry_id"}, status=400)
+        return JsonResponse(
+            {"ok": False, "error": "Missing entry_id"}, status=400)
 
     try:
         entry = ScheduleEntry.objects.get(pk=int(entry_id))
     except ScheduleEntry.DoesNotExist:
-        return JsonResponse({"ok": False, "error": "Schedule entry not found"}, status=404)
+        return JsonResponse(
+            {"ok": False, "error": "Schedule entry not found"}, status=404)
 
     # do the cancel
     with transaction.atomic():
@@ -2169,7 +2518,8 @@ def cancel_schedule_entry_v2(request):
             entry.save(update_fields=["status"])
         else:
             entry.delete()
-            return JsonResponse({"ok": True, "entry": {"id": int(entry_id), "deleted": True}}, status=200)
+            return JsonResponse(
+                {"ok": True, "entry": {"id": int(entry_id), "deleted": True}}, status=200)
 
     return JsonResponse(
         {
@@ -2182,6 +2532,7 @@ def cancel_schedule_entry_v2(request):
         },
         status=200,
     )
+
 
 @staff_member_required
 @require_POST
@@ -2213,12 +2564,15 @@ def cancel_schedule_entry(request, entry_id: int):
         _notify_driver(
             entry.driver,
             "cancelled",
-            f"Stop at {entry.start_time.strftime('%H:%M') if entry.start_time else ''} for {entry.client_name} was cancelled.",
+            f"Stop at {
+    entry.start_time.strftime('%H:%M') if entry.start_time else ''} for {
+        entry.client_name} was cancelled.",
             entry,
             {"date": entry.date.isoformat()},
         )
 
-    return JsonResponse({"ok": True, "entry_id": entry.id, "status": entry.status})
+    return JsonResponse(
+        {"ok": True, "entry_id": entry.id, "status": entry.status})
 
 
 # ==============================
@@ -2230,7 +2584,8 @@ def all_driver_schedules(request):
         "driver__name", "date"
     )
     return render(
-        request, "scheduler/all_driver_schedules.html", {"schedules": schedules}
+        request, "scheduler/all_driver_schedules.html", {
+            "schedules": schedules}
     )
 
 
@@ -2250,12 +2605,6 @@ def daily_schedule_sheet(request):
     )
 
 
-from django.views.decorators.http import require_POST
-from django.contrib.auth.decorators import login_required
-from django.utils.dateparse import parse_date
-import json
-from .services.recommend import recommend_driver_for
-
 @login_required
 @require_POST
 def recommend_driver(request):
@@ -2264,7 +2613,8 @@ def recommend_driver(request):
     when = parse_date(data.get("date"))
     pickup_address = data.get("pickup_address") or ""
     if not client_id or not when:
-        return JsonResponse({"ok": False, "error": "client_id and date required"}, status=400)
+        return JsonResponse(
+            {"ok": False, "error": "client_id and date required"}, status=400)
 
     recs = recommend_driver_for(client_id, when, pickup_address)
     return JsonResponse({"ok": True, "recommendations": recs})
@@ -2366,15 +2716,16 @@ def _entry_key_from_entry(e):
     )
 
 
-from django.db import transaction
-from django.utils import timezone
-from scheduler.models import ScheduleTemplate, Schedule, ScheduleEntry, Company
-
 # If you use a tag to mark template-made rows, keep your constant; else define:
 TEMPLATE_TAG_PREFIX = "[TEMPLATE:"
 
+
 @transaction.atomic
-def _apply_template_for_date(target_date, *, company: Company, mode: str = "append"):
+def _apply_template_for_date(
+    target_date,
+    *,
+    company: Company,
+     mode: str = "append"):
     """
     Materialize active ScheduleTemplate(s) for (company, weekday) into a Schedule + ScheduleEntry rows.
 
@@ -2411,12 +2762,15 @@ def _apply_template_for_date(target_date, *, company: Company, mode: str = "appe
     # 3) Dry-run tally
     would_create = sum(t.entries.count() for t in templates)
     if mode == "dry-run":
-        existing = ScheduleEntry.objects.filter(company=company, schedule=schedule).count()
+        existing = ScheduleEntry.objects.filter(
+    company=company, schedule=schedule).count()
         return {
             "created": created,
             "message": (
-                f"Would materialize {would_create} entries from {templates.count()} "
-                f"template(s) into schedule {schedule.id} (existing: {existing})."
+                f"Would materialize {would_create} entries from {
+    templates.count()} "
+                f"template(s) into schedule {
+    schedule.id} (existing: {existing})."
             ),
             "schedule_id": schedule.id,
             "entry_count": would_create,
@@ -2436,22 +2790,73 @@ def _apply_template_for_date(target_date, *, company: Company, mode: str = "appe
     for tmpl in templates:
         tag = f"{TEMPLATE_TAG_PREFIX}{tmpl.id}]"
         for e in tmpl.entries.all().order_by("order", "id"):
-            driver  = e.driver or _resolve_driver_from_template_row(e)
+            driver = e.driver or _resolve_driver_from_template_row(e)
             vehicle = e.vehicle
-            client  = e.client
+            client = e.client
 
-            # Prefer explicit fields on entry; fallback to client’s saved addresses/cities
-            pickup_address   = (e.pickup_address   or (client.pickup_address   if client else "")) or ""
-            pickup_city      = (getattr(e, "pickup_city", None) or (getattr(client, "pickup_city", None) if client else "")) or ""
-            pickup_lat       = getattr(e, "pickup_lat", None) or (getattr(client, "pickup_lat", None) if client else None)
-            pickup_lng       = getattr(e, "pickup_lng", None) or (getattr(client, "pickup_lng", None) if client else None)
+            # Prefer explicit fields on entry; fallback to client’s saved
+            # addresses/cities
+            pickup_address = (
+    e.pickup_address or (
+        client.pickup_address if client else "")) or ""
+            pickup_city = (
+    getattr(
+        e,
+        "pickup_city",
+        None) or (
+            getattr(
+                client,
+                "pickup_city",
+                 None) if client else "")) or ""
+            pickup_lat = getattr(
+    e,
+    "pickup_lat",
+    None) or (
+        getattr(
+            client,
+            "pickup_lat",
+             None) if client else None)
+            pickup_lng = getattr(
+    e,
+    "pickup_lng",
+    None) or (
+        getattr(
+            client,
+            "pickup_lng",
+             None) if client else None)
 
-            dropoff_address  = (e.dropoff_address  or (client.dropoff_address  if client else "")) or ""
-            dropoff_city     = (getattr(e, "dropoff_city", None) or (getattr(client, "dropoff_city", None) if client else "")) or ""
-            dropoff_lat      = getattr(e, "dropoff_lat", None) or (getattr(client, "dropoff_lat", None) if client else None)
-            dropoff_lng      = getattr(e, "dropoff_lng", None) or (getattr(client, "dropoff_lng", None) if client else None)
+            dropoff_address = (
+    e.dropoff_address or (
+        client.dropoff_address if client else "")) or ""
+            dropoff_city = (
+    getattr(
+        e,
+        "dropoff_city",
+        None) or (
+            getattr(
+                client,
+                "dropoff_city",
+                 None) if client else "")) or ""
+            dropoff_lat = getattr(
+    e,
+    "dropoff_lat",
+    None) or (
+        getattr(
+            client,
+            "dropoff_lat",
+             None) if client else None)
+            dropoff_lng = getattr(
+    e,
+    "dropoff_lng",
+    None) or (
+        getattr(
+            client,
+            "dropoff_lng",
+             None) if client else None)
 
-            client_name = (client.name if client else None) or (e.client_name or "")
+            client_name = (
+    client.name if client else None) or (
+        e.client_name or "")
 
             base_notes = (e.notes or "").strip()
             notes = f"{base_notes}\n{tag}" if base_notes else tag
@@ -2464,7 +2869,8 @@ def _apply_template_for_date(target_date, *, company: Company, mode: str = "appe
                 client=client,
                 client_name=client_name,
                 start_time=e.start_time,
-                end_time=getattr(e, "end_time", None),   # include if model has it
+                # include if model has it
+                end_time=getattr(e, "end_time", None),
                 pickup_address=pickup_address,
                 pickup_city=pickup_city,
                 pickup_lat=pickup_lat,
@@ -2479,10 +2885,12 @@ def _apply_template_for_date(target_date, *, company: Company, mode: str = "appe
 
             # OPTIONAL guardrails:
             # if entry.driver is None:
-            #     raise ValueError(f"No driver for template entry id={e.id} (client={client_name})")
+            # raise ValueError(f"No driver for template entry id={e.id}
+            # (client={client_name})")
 
             # if entry.pickup_address and entry.dropoff_address and entry.pickup_address == entry.dropoff_address:
-            #     raise ValueError(f"Pickup and drop-off identical for template entry id={e.id}")
+            # raise ValueError(f"Pickup and drop-off identical for template
+            # entry id={e.id}")
 
             new_entries.append(entry)
 
@@ -2499,40 +2907,38 @@ def _apply_template_for_date(target_date, *, company: Company, mode: str = "appe
         "entry_count": len(new_entries),
     }
 
+
 def _copy_row_fields_safe(src: ScheduleEntry, dst: ScheduleEntry):
     """
     Copy fields from an existing ScheduleEntry to a new one without swapping pickup/drop-off,
     and include city/lat/lng fields if present on your model.
     """
     # identity / relations
-    dst.company       = src.company
-    dst.driver        = src.driver
-    dst.vehicle       = src.vehicle
-    dst.client        = src.client
-    dst.client_name   = src.client_name
+    dst.company = src.company
+    dst.driver = src.driver
+    dst.vehicle = src.vehicle
+    dst.client = src.client
+    dst.client_name = src.client_name
 
     # timing
-    dst.start_time    = src.start_time
-    dst.end_time      = getattr(src, "end_time", None)
+    dst.start_time = src.start_time
+    dst.end_time = getattr(src, "end_time", None)
 
     # pickup (verbatim)
     dst.pickup_address = src.pickup_address
     if hasattr(dst, "pickup_city"): dst.pickup_city = getattr(src, "pickup_city", "")
-    if hasattr(dst, "pickup_lat"):  dst.pickup_lat  = getattr(src, "pickup_lat", None)
-    if hasattr(dst, "pickup_lng"):  dst.pickup_lng  = getattr(src, "pickup_lng", None)
+    if hasattr(dst, "pickup_lat"): dst.pickup_lat = getattr(src, "pickup_lat", None)
+    if hasattr(dst, "pickup_lng"): dst.pickup_lng = getattr(src, "pickup_lng", None)
 
     # drop-off (verbatim)
     dst.dropoff_address = src.dropoff_address
     if hasattr(dst, "dropoff_city"): dst.dropoff_city = getattr(src, "dropoff_city", "")
-    if hasattr(dst, "dropoff_lat"):  dst.dropoff_lat  = getattr(src, "dropoff_lat", None)
-    if hasattr(dst, "dropoff_lng"):  dst.dropoff_lng  = getattr(src, "dropoff_lng", None)
+    if hasattr(dst, "dropoff_lat"): dst.dropoff_lat = getattr(src, "dropoff_lat", None)
+    if hasattr(dst, "dropoff_lng"): dst.dropoff_lng = getattr(src, "dropoff_lng", None)
 
     # status/notes
-    dst.status        = "scheduled"
-    dst.notes         = src.notes
-
-
-
+    dst.status = "scheduled"
+    dst.notes = src.notes
 
 
 def _resolve_company(request, data):
@@ -2556,8 +2962,8 @@ def _resolve_company(request, data):
     if Company.objects.count() == 1:
         return Company.objects.first()
 
-    raise ValueError("Cannot resolve company. Pass 'company_id' or link user→driver→company.")
-
+    raise ValueError(
+        "Cannot resolve company. Pass 'company_id' or link user→driver→company.")
 
 
 # ==============================
@@ -2581,7 +2987,8 @@ def import_logisticare(request):
                 driver, _ = Driver.objects.get_or_create(name=row["DRIVER"])
                 client, _ = Client.objects.get_or_create(name=row["MEMBER"])
                 pickup_time = datetime.strptime(row["TIME"], "%H:%M").time()
-                schedule_date = datetime.strptime(row["DATE"], "%m/%d/%Y").date()
+                schedule_date = datetime.strptime(
+                    row["DATE"], "%m/%d/%Y").date()
 
                 AutoSchedule.objects.get_or_create(
                     date=schedule_date,
@@ -2605,20 +3012,6 @@ def import_logisticare(request):
 
 
 # ==== REPLACEMENTS FOR LEGACY AutoSchedule-BASED VIEWS ====
-
-from django.shortcuts import get_object_or_404, redirect, render
-from django.contrib import messages
-from django.http import JsonResponse
-from django.utils.dateparse import parse_date
-import datetime as dt
-
-from django.contrib.auth.decorators import login_required
-from django.contrib.admin.views.decorators import staff_member_required, user_passes_test
-from django.views.decorators.http import require_GET
-from django.core.serializers.json import DjangoJSONEncoder
-
-from .models import ScheduleEntry, Schedule, Client, Driver
-from .forms import ScheduleEntryForm
 
 
 @login_required(login_url="scheduler:user_login")
@@ -2650,14 +3043,10 @@ def delete_schedule_entry(request, pk):
         entry.delete()
         messages.success(request, "🗑️ Schedule entry deleted.")
         return redirect("scheduler:schedule_list")
-    return render(request, "scheduler/delete_confirm.html", {"schedule": entry})
+    return render(request,
+    "scheduler/delete_confirm.html",
+     {"schedule": entry})
 
-from django.contrib.auth.decorators import login_required
-from django.http import JsonResponse
-from django.views.decorators.http import require_GET
-from django.db.models import Q
-
-from .models import Client
 
 @login_required
 @require_GET
@@ -2665,7 +3054,8 @@ def clients_search(request):
     """
     Lightweight client search for type-ahead.
     GET /service/api/clients/search/?q=jo&limit=20
-    Returns: { results: [{id, name, pickup_address, dropoff_address}], has_more: bool }
+    Returns: { results: [
+        {id, name, pickup_address, dropoff_address}], has_more: bool }
     """
     q = (request.GET.get("q") or "").strip()
     try:
@@ -2684,7 +3074,10 @@ def clients_search(request):
         )
 
     items = list(
-        qs[: limit + 1].values("id", "name", "pickup_address", "dropoff_address")
+        qs[: limit + 1].values("id",
+    "name",
+    "pickup_address",
+     "dropoff_address")
     )
     has_more = len(items) > limit
     if has_more:
@@ -2733,13 +3126,22 @@ def cancelled_schedule(request):
         .filter(status="cancelled")
         .order_by("schedule__date", "start_time", "id")
     )
-    return render(request, "scheduler/cancelled_schedule.html", {"schedules": rows})
+    return render(request,
+    "scheduler/cancelled_schedule.html",
+     {"schedules": rows})
 
 
+# e.g., "ERNEST 1A", "DAVID 3"
+ROUTE_RE = re.compile(r'^[A-Z]{3,}\s+\d+[A-Z]?$')
 
-ROUTE_RE = re.compile(r'^[A-Z]{3,}\s+\d+[A-Z]?$')  # e.g., "ERNEST 1A", "DAVID 3"
+STATUSES = [
+    "scheduled",
+    "planned",
+    "en route",
+    "arrived",
+    "completed",
+     "cancelled"]
 
-STATUSES = ["scheduled", "planned", "en route", "arrived", "completed", "cancelled"]
 
 def _coalesce(*vals):
     for v in vals:
@@ -2747,24 +3149,32 @@ def _coalesce(*vals):
             return v
     return None
 
+
 def _date_from_query(request):
     raw = (request.GET.get("date") or "").strip()
     d = parse_date(raw)
     return d or timezone.localdate()
 
 
-
 # Acceptable normalized statuses used only for display/filtering
-STATUSES = ["scheduled", "planned", "en route", "arrived", "completed", "cancelled"]
+STATUSES = [
+    "scheduled",
+    "planned",
+    "en route",
+    "arrived",
+    "completed",
+     "cancelled"]
 
 # Many imported rows have the "route" (e.g., ERNEST 1A) in pickup_address
 ROUTE_RE = re.compile(r'^[A-Z]{3,}\s+\d+[A-Z]?$')
 
+
 def _coalesce(*vals):
     for v in vals:
         if v not in (None, "", "nan", "NaN"):
             return v
     return None
+
 
 def _date_from_query(request):
     raw = (request.GET.get("date") or "").strip()
@@ -2772,16 +3182,24 @@ def _date_from_query(request):
     return d or timezone.localdate()
 
 
+# e.g., "ERNEST 1A", "DAVID 3"
+ROUTE_RE = re.compile(r'^[A-Z]{3,}\s+\d+[A-Z]?$')
 
-ROUTE_RE = re.compile(r'^[A-Z]{3,}\s+\d+[A-Z]?$')  # e.g., "ERNEST 1A", "DAVID 3"
+STATUSES = [
+    "scheduled",
+    "planned",
+    "en route",
+    "arrived",
+    "completed",
+     "cancelled"]
 
-STATUSES = ["scheduled", "planned", "en route", "arrived", "completed", "cancelled"]
 
 def _coalesce(*vals):
     for v in vals:
         if v not in (None, "", "nan", "NaN"):
             return v
     return None
+
 
 def _date_from_query(request):
     raw = (request.GET.get("date") or "").strip()
@@ -2801,6 +3219,8 @@ def _value_from(obj, names):
                 if v:
                     return v
     return None
+
+
 def _value_from(obj, names):
     if not obj:
         return None
@@ -2812,6 +3232,7 @@ def _value_from(obj, names):
                 if s:
                     return s
     return None
+
 
 # Aliases we will try on ScheduleEntry
 ENTRY_ADDR_ALIASES = {
@@ -2834,6 +3255,7 @@ CLIENT_ADDR_ALIASES = {
     ],
     "dropoff_city": ["dropoff_city", "facility_city", "work_city", "destination_city", "to_city", "end_city"],
 }
+
 
 def _display_time(t):
     if not t:
@@ -2870,18 +3292,24 @@ def _get_addr_pair(entry, client, kind: str):
     return (addr, city)
 
 
-
 # ---------- shared helpers ----------
-NOISE_RE = re.compile(r'^(time|pick\s*up|pickup|drop\s*off|name|phone)\b', re.I)   # header-ish
-TICKET_RE = re.compile(r'^\d+-\d+')                                               # e.g. 1-80937-A
-ROUTE_RE  = re.compile(r'^\s*([A-Z]{3,})\s+\d+[A-Z]?\s*$', re.I)                  # ERNEST 4A, GUDOYI 1
-TIME_RE   = re.compile(r'^\s*\d{1,2}:\d{2}(\s*[AP]M)?\s*$', re.I)
+NOISE_RE = re.compile(
+    r'^(time|pick\s*up|pickup|drop\s*off|name|phone)\b',
+     re.I)   # header-ish
+# e.g. 1-80937-A
+TICKET_RE = re.compile(r'^\d+-\d+')
+ROUTE_RE = re.compile(
+    r'^\s*([A-Z]{3,})\s+\d+[A-Z]?\s*$',
+     re.I)                  # ERNEST 4A, GUDOYI 1
+TIME_RE = re.compile(r'^\s*\d{1,2}:\d{2}(\s*[AP]M)?\s*$', re.I)
+
 
 def first_nonempty(*vals):
     for v in vals:
         if v is not None and str(v).strip():
             return v
     return ""
+
 
 def _display_time(t):
     if not t:
@@ -2903,9 +3331,10 @@ def first_nonempty(*vals):
 
 
 # near the top of schedule_list
-import re
-ROUTE_RE = re.compile(r"^\s*([A-Z]{3,})\s+\d+[A-Z]?\s*$")  # ERNEST 4A, JOCK 3, etc.
-TIME_RE  = re.compile(r"^\s*\d{1,2}:\d{2}(\s*[AP]M)?\s*$", re.I)
+# ERNEST 4A, JOCK 3, etc.
+ROUTE_RE = re.compile(r"^\s*([A-Z]{3,})\s+\d+[A-Z]?\s*$")
+TIME_RE = re.compile(r"^\s*\d{1,2}:\d{2}(\s*[AP]M)?\s*$", re.I)
+
 
 def _clean_place_label(s):
     """
@@ -2930,6 +3359,7 @@ def _clean_place_label(s):
 def _parse_date_param(s):
     return parse_date((s or "").strip()) or timezone.localdate()
 
+
 def _first_nonempty(*vals):
     for v in vals:
         if v is None:
@@ -2940,13 +3370,11 @@ def _first_nonempty(*vals):
     return ""
 
 
-import re
-
 _TIME_RE = re.compile(r"^\s*(?:[01]?\d|2[0-3]):[0-5]\d(?:\s*[AaPp][Mm])?\s*$")
-import re
 
 # Looks like "DAVID 4", "SAMMY 1A", "STEVE 5B", "JOCK 2", etc.
 _DRIVER_TOKEN_RE = re.compile(r"^\s*([A-Za-z]{2,})\s+\d+[A-Za-z]?\s*$")
+
 
 def _norm(s: str | None) -> str | None:
     if not s:
@@ -2954,11 +3382,13 @@ def _norm(s: str | None) -> str | None:
     s = str(s).strip()
     return s or None
 
+
 def _looks_like_driver_token(s: str | None) -> bool:
     s = _norm(s)
     if not s:
         return False
     return bool(_DRIVER_TOKEN_RE.match(s))
+
 
 def _extract_driver_name_from_token(s: str | None) -> str | None:
     """
@@ -2974,7 +3404,6 @@ def _extract_driver_name_from_token(s: str | None) -> str | None:
     # Normalize casing: 'SAMMY' -> 'Sammy'
     return name[:1].upper() + name[1:].lower()
 
-import re
 
 # Detects times like "0:00", "07:45", "7:45 AM"
 _TIME_RE = re.compile(r"^\s*(?:[01]?\d|2[0-3]):[0-5]\d(?:\s*[AaPp][Mm])?\s*$")
@@ -2994,10 +3423,12 @@ _ADDR_CITY_RE = re.compile(
     re.IGNORECASE | re.VERBOSE
 )
 
+
 def _is_timeish(s: str | None) -> bool:
     if not s:
         return False
     return bool(_TIME_RE.match(str(s).strip()))
+
 
 def _clean_token(s: str | None) -> str | None:
     """
@@ -3010,6 +3441,7 @@ def _clean_token(s: str | None) -> str | None:
         return None
     return re.sub(r"\s+", " ", s)
 
+
 def _join_addr(addr: str | None, city: str | None) -> str | None:
     addr = _clean_token(addr)
     city = _clean_token(city)
@@ -3017,7 +3449,9 @@ def _join_addr(addr: str | None, city: str | None) -> str | None:
         return f"{addr}, {city}"
     return addr or city or None
 
-def _extract_addr_city_from_text(text: str | None) -> tuple[str | None, str | None]:
+
+def _extract_addr_city_from_text(
+    text: str | None) -> tuple[str | None, str | None]:
     """
     Heuristically extract (address, city) from free text like:
     'TERRY O 7OAKLAND STREET LEXINGTON' or '7 Oakland St Lexington'
@@ -3067,6 +3501,7 @@ def _clean_token(s: str | None) -> str | None:
     s = re.sub(r"\s+", " ", s)
     return s or None
 
+
 def _join_addr(addr: str | None, city: str | None) -> str | None:
     """
     Friendly join: if both present -> 'addr, city'; else whichever exists; else None.
@@ -3076,6 +3511,7 @@ def _join_addr(addr: str | None, city: str | None) -> str | None:
     if addr and city:
         return f"{addr}, {city}"
     return addr or city or None
+
 
 def _display_time(t) -> str:
     if not t:
@@ -3090,11 +3526,12 @@ def _display_time(t) -> str:
 # 1) Prefer a named group 'base'
 _RE_ROUTE_NAMED = re.compile(r"\broute[:\s\-]*(?P<base>[A-Za-z0-9]+)\b", re.I)
 # 2) Common shorthand like "RT: 12" / "Rt-7"
-_RE_ROUTE_NUM   = re.compile(r"\brt\.?\s*[:#\-]?\s*([A-Za-z0-9]+)\b", re.I)
+_RE_ROUTE_NUM = re.compile(r"\brt\.?\s*[:#\-]?\s*([A-Za-z0-9]+)\b", re.I)
 # 3) Very loose fallback: captures a word following 'route'
 _RE_ROUTE_LOOSE = re.compile(r"\broute\b[^A-Za-z0-9]+([A-Za-z0-9]+)", re.I)
 
 _PATTERNS = (_RE_ROUTE_NAMED, _RE_ROUTE_NUM, _RE_ROUTE_LOOSE)
+
 
 def _route_base_from_text(text: str | None) -> str | None:
     """
@@ -3133,23 +3570,23 @@ def _route_base_from_text(text: str | None) -> str | None:
     return None
 
 
-
-
-
 def schedule_list(request):
-    from .models import ScheduleEntry, Driver, Company  # add Company if you multi-tenant
+    # add Company if you multi-tenant
+    from .models import ScheduleEntry, Driver, Company
     from django.db.models import Q, Max
     from django.utils import timezone
     import re
-    
-        # If this user is a driver (non-staff), send them to the driver dashboard
+
+        # If this user is a driver (non-staff), send them to the driver
+        # dashboard
     user_driver = Driver.objects.filter(user=request.user).first()
     if user_driver and not request.user.is_staff:
         return redirect("scheduler:driver_dashboard")
 
     # ---------- local helpers (safe, self-contained) ----------
     MULTI_WS = re.compile(r"\s+")
-    TIME_TOKEN = re.compile(r"\b([01]?\d|2[0-3]):[0-5]\d\b")  # 7:45, 14:00, etc
+    TIME_TOKEN = re.compile(
+        r"\b([01]?\d|2[0-3]):[0-5]\d\b")  # 7:45, 14:00, etc
     DRIVER_TOKENS = re.compile(
         r"\b(ERNEST|STEVE|WILLIAM|KENNEDY|JOCK|TONY|SAMMY|JOSHUA|CHARLES|DAVID|WAIYAKI|MUNIU|GUDOYI|JOCK|KENNY|JOSH|WILLIAM|STEVE)\b",
         re.I,
@@ -3185,14 +3622,16 @@ def schedule_list(request):
           - {client_id -> latest ScheduleEntry}
           - {client_name -> latest ScheduleEntry}
         """
-        # If your app is multi-tenant, filter by company too. For now we keep it open.
+        # If your app is multi-tenant, filter by company too. For now we keep
+        # it open.
         date_filter = {"schedule__date__lt": target_date}
         base = (ScheduleEntry.objects
                 .exclude(client__isnull=True)
                 .filter(**date_filter)
                 .values("client_id")
                 .annotate(latest=Max("id")))
-        id_map = {row["latest"]: row["client_id"] for row in base if row.get("latest")}
+        id_map = {row["latest"]: row["client_id"]
+            for row in base if row.get("latest")}
         latest_objs = (ScheduleEntry.objects
                        .filter(id__in=id_map.keys())
                        .select_related("client"))
@@ -3224,7 +3663,13 @@ def schedule_list(request):
         if getattr(client, "id", None):
             last = latest_by_id.get(client.id)
         if not last:
-            cname = getattr(client, "name", None) or getattr(e, "client_name", None)
+            cname = getattr(
+    client,
+    "name",
+    None) or getattr(
+        e,
+        "client_name",
+         None)
             if cname:
                 last = latest_by_name.get(cname)
 
@@ -3250,12 +3695,18 @@ def schedule_list(request):
     except Exception:
         day = _date.today()
 
-    driver_q    = (request.GET.get("driver") or "").strip()
+    driver_q = (request.GET.get("driver") or "").strip()
     driver_id_q = (request.GET.get("driver_id") or "").strip()
-    status_q    = (request.GET.get("status") or "").strip().lower()
-    debug       = request.GET.get("debug") == "1"
+    status_q = (request.GET.get("status") or "").strip().lower()
+    debug = request.GET.get("debug") == "1"
 
-    STATUSES = {"scheduled", "planned", "en route", "arrived", "completed", "cancelled"}
+    STATUSES = {
+    "scheduled",
+    "planned",
+    "en route",
+    "arrived",
+    "completed",
+     "cancelled"}
 
     # ---------- base queryset ----------
     qs = (
@@ -3286,7 +3737,10 @@ def schedule_list(request):
         qs = qs.filter(status__iexact=status_q)
 
     # ---------- driver index + suggestions ----------
-    all_drivers = list(Driver.objects.only("id", "name").filter(company__schedules__date=day).distinct())
+    all_drivers = list(
+    Driver.objects.only(
+        "id", "name").filter(
+            company__schedules__date=day).distinct())
     driver_index = {}
     for d in all_drivers:
         if not d.name:
@@ -3303,12 +3757,23 @@ def schedule_list(request):
 
     # ---------- build rows ----------
     rows = []
-    junk_patterns = ("PICK UP", "TIME NAME", "DRIVER ID", "ADDRESS PICK", "MEMBER", "PHONE", "NAME", "CLIENT")
+    junk_patterns = (
+    "PICK UP",
+    "TIME NAME",
+    "DRIVER ID",
+    "ADDRESS PICK",
+    "MEMBER",
+    "PHONE",
+    "NAME",
+     "CLIENT")
 
     for e in qs:
         c = getattr(e, "client", None)
 
-        client_name = _first_nonempty(getattr(e, "client_name", None), getattr(c, "name", None))
+        client_name = _first_nonempty(
+    getattr(
+        e, "client_name", None), getattr(
+            c, "name", None))
         cu = (client_name or "").upper()
 
         # ignore obvious header/garbage rows
@@ -3316,39 +3781,57 @@ def schedule_list(request):
             continue
 
         # Resolve + clean pickup/dropoff for display
-        pu_disp, do_disp, fused = _resolve_addresses(e, c, latest_by_id, latest_by_name)
+        pu_disp, do_disp, fused = _resolve_addresses(
+            e, c, latest_by_id, latest_by_name)
 
-        # If still missing, fall back to your existing heuristics (notes/text extraction)
+        # If still missing, fall back to your existing heuristics (notes/text
+        # extraction)
         if _is_blank(pu_disp):
-            pu_addr_raw = _first_nonempty(getattr(e, "pickup_address", None), getattr(c, "pickup_address", None))
-            pu_city_raw = _first_nonempty(getattr(e, "pickup_city", None), getattr(c, "pickup_city", None))
+            pu_addr_raw = _first_nonempty(
+    getattr(
+        e, "pickup_address", None), getattr(
+            c, "pickup_address", None))
+            pu_city_raw = _first_nonempty(
+    getattr(
+        e, "pickup_city", None), getattr(
+            c, "pickup_city", None))
             pu_addr = pu_addr_raw or _get_addr_pair(e, c, "pickup")[0]
             pu_city = pu_city_raw or _get_addr_pair(e, c, "pickup")[1]
             if _is_blank(pu_addr) and _is_blank(pu_city):
-                fa_addr, fa_city = _extract_addr_city_from_text(client_name) or (None, None)
+                fa_addr, fa_city = _extract_addr_city_from_text(
+                    client_name) or (None, None)
                 if not fa_addr and not fa_city:
-                    fa_addr, fa_city = _extract_addr_city_from_text(getattr(e, "notes", None)) or (None, None)
+                    fa_addr, fa_city = _extract_addr_city_from_text(
+                        getattr(e, "notes", None)) or (None, None)
                 pu_addr = pu_addr or fa_addr
                 pu_city = pu_city or fa_city
             pu_disp = _strip_noise(_join_addr(pu_addr, pu_city))
 
         if _is_blank(do_disp):
-            do_addr_raw = _first_nonempty(getattr(e, "dropoff_address", None), getattr(c, "dropoff_address", None))
-            do_city_raw = _first_nonempty(getattr(e, "dropoff_city", None), getattr(c, "dropoff_city", None))
+            do_addr_raw = _first_nonempty(
+    getattr(
+        e, "dropoff_address", None), getattr(
+            c, "dropoff_address", None))
+            do_city_raw = _first_nonempty(
+    getattr(
+        e, "dropoff_city", None), getattr(
+            c, "dropoff_city", None))
             do_addr = do_addr_raw or _get_addr_pair(e, c, "dropoff")[0]
             do_city = do_city_raw or _get_addr_pair(e, c, "dropoff")[1]
             if _is_blank(do_addr) and _is_blank(do_city):
-                fb_addr, fb_city = _extract_addr_city_from_text(getattr(e, "notes", None)) or (None, None)
+                fb_addr, fb_city = _extract_addr_city_from_text(
+                    getattr(e, "notes", None)) or (None, None)
                 if not fb_addr and not fb_city:
-                    fb_addr, fb_city = _extract_addr_city_from_text(client_name) or (None, None)
+                    fb_addr, fb_city = _extract_addr_city_from_text(
+                        client_name) or (None, None)
                 do_addr = do_addr or fb_addr
                 do_city = do_city or fb_city
             do_disp = _strip_noise(_join_addr(do_addr, do_city))
 
-        pickup_display  = pu_disp or "—"
+        pickup_display = pu_disp or "—"
         dropoff_display = do_disp or "—"
 
-        # -------- driver inference (kept your logic, with a tiny cleanup) --------
+        # -------- driver inference (kept your logic, with a tiny cleanup) ----
         driver_fk_name = getattr(getattr(e, "driver", None), "name", None)
         inferred_driver = None
         inferred_from = None
@@ -3362,10 +3845,24 @@ def schedule_list(request):
                     inferred_from = origin
                     break
 
-        if inferred_from == "pickup" and _looks_like_driver_token(getattr(e, "pickup_address", None)):
-            pickup_display = _strip_noise(_join_addr(None, getattr(c, "pickup_city", None))) or pickup_display
-        if inferred_from == "dropoff" and _looks_like_driver_token(getattr(e, "dropoff_address", None)):
-            dropoff_display = _strip_noise(_join_addr(None, getattr(c, "dropoff_city", None))) or dropoff_display
+        if inferred_from == "pickup" and _looks_like_driver_token(
+            getattr(e, "pickup_address", None)):
+            pickup_display = _strip_noise(
+    _join_addr(
+        None,
+        getattr(
+            c,
+            "pickup_city",
+             None))) or pickup_display
+        if inferred_from == "dropoff" and _looks_like_driver_token(
+            getattr(e, "dropoff_address", None)):
+            dropoff_display = _strip_noise(
+    _join_addr(
+        None,
+        getattr(
+            c,
+            "dropoff_city",
+             None))) or dropoff_display
 
         driver_display = _first_nonempty(
             driver_fk_name,
@@ -3376,7 +3873,8 @@ def schedule_list(request):
         ) or "—"
 
         final_client_name = client_name or "—"
-        if final_client_name.upper() in junk_patterns or len(final_client_name.strip()) < 2:
+        if final_client_name.upper() in junk_patterns or len(
+            final_client_name.strip()) < 2:
             final_client_name = "—"
 
         rows.append({
@@ -3425,29 +3923,26 @@ def schedule_list(request):
     return render(request, "scheduler/schedule_list.html", ctx)
 
 
-
 # scheduler/views.py
-from django.contrib.auth.decorators import login_required
-from django.http import JsonResponse
-from django.utils.dateparse import parse_date
-from django.utils.timezone import localdate
-from django.apps import apps
+
 
 def _get_company():
-    Company = apps.get_model("scheduler","Company")
+    Company = apps.get_model("scheduler", "Company")
     return Company.objects.first() if Company else None
 
+
 def _entries_for_date(day):
-    ScheduleEntry = apps.get_model("scheduler","ScheduleEntry")
+    ScheduleEntry = apps.get_model("scheduler", "ScheduleEntry")
     if not ScheduleEntry:
         return []
     company = _get_company()
     qs = (ScheduleEntry.objects
-          .select_related("schedule","client","driver","vehicle")
+          .select_related("schedule", "client", "driver", "vehicle")
           .filter(schedule__date=day))
     if hasattr(ScheduleEntry, "company") and company:
         qs = qs.filter(company=company)
-    return qs.order_by("start_time","id")
+    return qs.order_by("start_time", "id")
+
 
 def _fmt_time(t):
     if not t: return ""
@@ -3517,7 +4012,6 @@ def schedule_api(request):
     )
 
 
-
 @require_GET
 @login_required(login_url="scheduler:user_login")
 def my_schedule_api(request):
@@ -3530,7 +4024,8 @@ def my_schedule_api(request):
 
     driver = Driver.objects.filter(user=request.user).first()
     if not driver:
-        return JsonResponse({"ok": True, "date": day.isoformat(), "count": 0, "entries": []})
+        return JsonResponse(
+            {"ok": True, "date": day.isoformat(), "count": 0, "entries": []})
 
     qs = (
         ScheduleEntry.objects
@@ -3554,8 +4049,8 @@ def my_schedule_api(request):
         )
     )
     data = list(qs)
-    return JsonResponse({"ok": True, "date": day.isoformat(), "count": len(data), "entries": data})
-
+    return JsonResponse({"ok": True, "date": day.isoformat(),
+                        "count": len(data), "entries": data})
 
 
 @login_required
@@ -3565,25 +4060,24 @@ def schedule_today_page(request):
     with a date picker + live refresh.
     """
     day = localdate()
-    return render(request, "scheduler/schedule_today.html", {"default_date": day})
+    return render(request,
+    "scheduler/schedule_today.html",
+     {"default_date": day})
 
 
 # ========== DRIVER DASH ==========
 
 # Hide junk/header rows and ticket-like names
-NOISE_RE  = re.compile(r"(?:^PICK\s*UP\b|^TIME\s*NAME\b|^DRIVER\s*ID\b|^ADDRESS\s*PICK\b)", re.I)
+NOISE_RE = re.compile(
+    r"(?:^PICK\s*UP\b|^TIME\s*NAME\b|^DRIVER\s*ID\b|^ADDRESS\s*PICK\b)",
+     re.I)
 TICKET_RE = re.compile(r"^\s*\d{1,3}-\d{5,}[A-Z]?\b", re.I)
 
 # Route/time tokens we never want to show as addresses
-ROUTE_RE = re.compile(r"^\s*[A-Z]{3,}\s+\d+[A-Z]?\s*$")     # ERNEST 1A, JOCK 3B, etc.
-TIME_RE  = re.compile(r"^\s*\d{1,2}:\d{2}(\s*[AP]M)?\s*$", re.I)
+# ERNEST 1A, JOCK 3B, etc.
+ROUTE_RE = re.compile(r"^\s*[A-Z]{3,}\s+\d+[A-Z]?\s*$")
+TIME_RE = re.compile(r"^\s*\d{1,2}:\d{2}(\s*[AP]M)?\s*$", re.I)
 
-
-from django.contrib.auth.decorators import login_required
-from django.http import JsonResponse, Http404
-from django.views.decorators.http import require_GET
-from django.utils.cache import patch_cache_control
-from .models import Client
 
 @login_required
 @require_GET
@@ -3638,8 +4132,6 @@ def _clean_place_label(s: str | None):
     return s
 
 
-
-
 def first_nonempty(*vals):
     """Return first value that is not None and not empty when stripped."""
     for v in vals:
@@ -3672,7 +4164,6 @@ def _clean_place_label(s: str | None):
     return s
 
 
-
 def first_nonempty(*vals):
     for v in vals:
         if v is None:
@@ -3682,160 +4173,107 @@ def first_nonempty(*vals):
             return s
     return ""
 
+
 # scheduler/views.py
-from django.contrib.auth.decorators import login_required
-from django.views.decorators.csrf import ensure_csrf_cookie
-from django.utils import timezone
-from django.http import JsonResponse
-from django.shortcuts import render, redirect
-from django.contrib import messages
-from django.db.models import Q
-from django.utils.dateparse import parse_date
-import re
-from urllib.parse import quote_plus
 
-ROUTE_RE = re.compile(r"^[A-Z]{3,}\s+\d+[A-Z]?$")       # e.g. ERNEST 4A, GUDOYI 1
-TIME_RE  = re.compile(r"^\d{1,2}:\d{2}(\s*[AP]M)?$", re.I)
-
-
-from django.contrib import messages
-from urllib.parse import quote_plus
-import os
+# e.g. ERNEST 4A, GUDOYI 1
+ROUTE_RE = re.compile(r"^[A-Z]{3,}\s+\d+[A-Z]?$")
+TIME_RE = re.compile(r"^\d{1,2}:\d{2}(\s*[AP]M)?$", re.I)
 
 
 @login_required(login_url="/admin/login/")
 def driver_dashboard(request):
+    from datetime import date as _date, datetime as _datetime
+    from urllib.parse import quote_plus
+    from django.http import JsonResponse, HttpResponse
+    from django.shortcuts import render, redirect
+    from django.contrib import messages
+    from .models import Driver, ScheduleEntry, Company
 
-    from datetime import date, datetime
-    """
-    Clean, minimal driver dashboard:
+    # --- Helper: safe date parsing ---
+    def _safe_day(raw):
+        if not raw:
+            return _date.today()
+        try:
+            return _datetime.strptime(raw.strip(), "%Y-%m-%d").date()
+        except Exception:
+            return _date.today()
 
-    - Non-staff: see ONLY their own trips for the selected date.
-    - Staff: see all trips for that date.
-    """
+    # --- Helper: safe login redirect ---
+    def _safe_login_url():
+        return "/admin/login/"
 
-    user = request.user
-    udriver = getattr(user, "driver", None)
-
-    # --- DIAG branch (keep this, it's gold for debugging) ---
+    # --- DIAGNOSTIC: shows who the server thinks you are --
     if request.GET.get("diag") == "1":
+        user = request.user
+        udriver = getattr(user, "driver", None)
         return JsonResponse({
-            "authenticated": bool(user.is_authenticated),
+            "authenticated": user.is_authenticated,
             "username": getattr(user, "username", None),
-            "is_staff": bool(getattr(user, "is_staff", False)),
-            "has_driver_relation": bool(udriver is not None),
+            "is_staff": getattr(user, "is_staff", False),
+            "has_driver_relation": udriver is not None,
             "driver_id": getattr(udriver, "id", None),
             "driver_name": getattr(udriver, "name", None),
         })
 
-    # --- 0) PING: prove route+auth ---
+    # --- PING: prove route+auth ---
     if request.GET.get("ping") == "1":
         return HttpResponse("DRIVER_DASH_OK", content_type="text/plain")
 
-    # --- 1) Inputs/identity ---
+    # --- 1) Identity & Inputs ---
+    user = request.user
+    user_driver = getattr(user, "driver", None)
+    day = _safe_day(request.GET.get("date"))
+    show_all = False
+    selected_driver = None
+    is_driver_user = False
+    company = None
 
-    # --- Parse date (YYYY-MM-DD) or today ---
-    raw_day = request.GET.get("date")
-    try:
-        day = _datetime.strptime(raw_day.strip(), "%Y-%m-%d").date() if raw_day else _date.today()
-    except Exception:
-        day = _date.today()
+    # --- Non-staff: must be a driver ---
+    if not user.is_staff:
+        if not user_driver:
+            messages.error(request, "❌ No driver profile linked to your account.")
+            return redirect(_safe_login_url())
+        selected_driver = user_driver
+        is_driver_user = True
+        show_all = False
+        company = getattr(user_driver, "company", None)
 
-    # --- Build base queryset ---
-    base_qs = (
-        ScheduleEntry.objects
-        .select_related("schedule", "driver", "client", "company", "vehicle")
-        .filter(schedule__date=day)
-    )
-
-    # Start with company from the logged-in driver, if any
-    company = getattr(user_driver, "company", None)
-
-    if user.is_staff:
-        # Staff can optionally pick a specific driver OR see all drivers in their company
-        if driver_id_param == "all":
-            show_all = True
-        elif driver_id_param:
+    # --- Staff: optional driver/company scoping ---
+    else:
+        # Allow ?driver_id= or ?company= for staff
+        driver_id_param = request.GET.get("driver_id")
+        if driver_id_param and driver_id_param != "all":
             try:
-                selected_driver = Driver.objects.select_related("company").get(pk=int(driver_id_param))
-            except Exception:
-                selected_driver = None
+                selected_driver = Driver.objects.get(pk=int(driver_id_param))
+                company = selected_driver.company
+            except (ValueError, Driver.DoesNotExist):
+                pass
 
-        if not selected_driver and driver_name_param:
-            selected_driver = (
-                Driver.objects
-                .select_related("company")
-                .filter(name__icontains=driver_name_param)
-                .order_by("name")
-                .first()
-            )
-            show_all = False if selected_driver else True
-
-        if selected_driver is None and driver_id_param != "all":
-            show_all = True
-
-        # If the staff user selected a driver and we don't yet have a company, derive it
-        if selected_driver and company is None:
-            company = selected_driver.company
-
-        # Optional: allow superusers to scope by ?company=slug when no driver/company inferred
+        # Superuser can scope by ?company=slug
         if company is None and user.is_superuser:
             company_slug = request.GET.get("company")
             if company_slug:
                 company = Company.objects.filter(slug=company_slug).first()
 
-    else:
-        # Non-staff → must be a driver user
-        if not user_driver:
-
-    # Staff vs driver behaviour
-    if user.is_staff:
-        qs = base_qs.order_by("driver__name", "start_time", "id")
-        selected_driver = None
-        is_driver_user = False
-    else:
-        if not udriver:
-
-            try:
-                messages.error(request, "❌ No driver profile linked to your account.")
-            except Exception:
-                pass
-
-            # send to login if no linked driver profile
-            return redirect("/admin/login/")
-
-        selected_driver = user_driver
-        show_all = False
-        is_driver_user = True
-        # company already set from user_driver above
-
-    # --- 2) Data (kept minimal; no 500s) ---
-    qs = (
-        ScheduleEntry.objects
-        .select_related("schedule", "driver", "client")
-        .filter(schedule__date=day)
-        .order_by("driver__name", "start_time", "id")
+    # --- 2) Build Queryset: ONLY driver's entries for non-staff ---
+    qs = ScheduleEntry.objects.select_related("schedule", "driver", "client").filter(
+        schedule__date=day
     )
 
-    # 🔐 Company scoping: if we know the company, always filter by it
+    # 🔐 Always filter by company if known
     if company is not None:
         qs = qs.filter(company=company)
 
-    # For non-staff, also restrict to THEIR driver only (per-employee view)
+    # 🔑 Non-staff: ONLY their own trips
     if not user.is_staff:
-        if not user_driver:
-            messages.error(request, "No driver profile linked to your account.")
-            return redirect("scheduler:user_login")
         qs = qs.filter(driver=user_driver)
-        show_all = False
-        selected_driver = user_driver
-            return redirect("/admin/login/")
+    # Staff: all (or scoped by selected_driver/company above)
 
-        qs = base_qs.filter(driver=udriver).order_by("start_time", "id")
-        selected_driver = udriver
-        is_driver_user = True
+    # Order consistently
+    qs = qs.order_by("start_time", "id") if not user.is_staff else qs.order_by("driver__name", "start_time", "id")
 
-    # --- Build trips list (simple, no skipping) ---
+    # --- 3) Build trips ---
     def _first_nonempty(*vals):
         for v in vals:
             if v and str(v).strip():
@@ -3873,15 +4311,11 @@ def driver_dashboard(request):
         e_lat = getattr(e, "dropoff_latitude", None)
         e_lng = getattr(e, "dropoff_longitude", None)
 
-        pickup_q  = _q_from_coord_or_label(s_lat, s_lng, pu_label)
+        pickup_q = _q_from_coord_or_label(s_lat, s_lng, pu_label)
         dropoff_q = _q_from_coord_or_label(e_lat, e_lng, do_label)
 
-        nav_pickup_url  = f"https://www.google.com/maps/dir/?api=1&destination={pickup_q}"  if pickup_q  else None
+        nav_pickup_url = f"https://www.google.com/maps/dir/?api=1&destination={pickup_q}" if pickup_q else None
         nav_dropoff_url = f"https://www.google.com/maps/dir/?api=1&destination={dropoff_q}" if dropoff_q else None
-
-
-        # Full route (optional): pickup → dropoff
-
         route_url = (
             f"https://www.google.com/maps/dir/?api=1&origin={pickup_q}&destination={dropoff_q}"
             if (pickup_q and dropoff_q) else None
@@ -3889,7 +4323,7 @@ def driver_dashboard(request):
 
         start_time = getattr(e, "start_time", None)
         time_str = "—"
-        if start_time and hasattr(start_time, "strftime"):
+        if start_time:
             try:
                 time_str = start_time.strftime("%-I:%M %p")
             except Exception:
@@ -3900,20 +4334,25 @@ def driver_dashboard(request):
             "client": client_label or "—",
             "driver": getattr(e.driver, "name", None),
             "time_str": time_str,
-
             "pickup_label": pu_label or "—",
             "dropoff_label": do_label or "—",
             "maps_url": route_url,
             "nav_pickup_url": nav_pickup_url,
             "nav_dropoff_url": nav_dropoff_url,
             "route_url": route_url,
-            "pickup_latitude": s_lat, "pickup_longitude": s_lng,
-            "dropoff_latitude": e_lat, "dropoff_longitude": e_lng,
-            "pickup_address": pu_addr, "pickup_city": pu_city,
-            "dropoff_address": do_addr, "dropoff_city": do_city,
+            "pickup_latitude": s_lat,
+            "pickup_longitude": s_lng,
+            "dropoff_latitude": e_lat,
+            "dropoff_longitude": e_lng,
+            "pickup_address": pu_addr,
+            "pickup_city": pu_city,
+            "dropoff_address": do_addr,
+            "dropoff_city": do_city,
+            "status": getattr(e, "status", "scheduled"),
+            "vehicle_name": getattr(e.vehicle, "name", None) if getattr(e, "vehicle", None) else None,
         })
 
-    # Staff: show drivers *for this company only*
+    # --- 4) Drivers list (staff only) ---
     if user.is_staff:
         driver_qs = Driver.objects.all()
         if company is not None:
@@ -3921,22 +4360,8 @@ def driver_dashboard(request):
         drivers = list(driver_qs.order_by("name").values("id", "name"))
     else:
         drivers = []
-            "status": getattr(e, "status", "scheduled"),
-            "vehicle_name": getattr(e.vehicle, "name", None) if getattr(e, "vehicle", None) else None,
-            "pickup_address": pu_addr or "",
-            "pickup_city": pu_city or "",
-            "dropoff_address": do_addr or "",
-            "dropoff_city": do_city or "",
-            "pickup_latitude": s_lat,
-            "pickup_longitude": s_lng,
-            "dropoff_latitude": e_lat,
-            "dropoff_longitude": e_lng,
-            "nav_pickup_url": nav_pickup_url,
-            "nav_dropoff_url": nav_dropoff_url,
-            "route_url": route_url,
-        })
 
-
+    # --- 5) Display name ---
     driver_display_name = (
         getattr(selected_driver, "name", None)
         or (user.get_full_name() if hasattr(user, "get_full_name") else "")
@@ -3944,14 +4369,12 @@ def driver_dashboard(request):
         or "Driver"
     )
 
-    # JSON mode
+    # --- 6) JSON mode ---
     if request.GET.get("format") == "json":
         return JsonResponse({
             "ok": True,
             "date": day.isoformat(),
-
             "show_all": show_all,
-
             "is_driver_user": is_driver_user,
             "driver": (
                 {"id": selected_driver.id, "name": getattr(selected_driver, "name", None)}
@@ -3964,7 +4387,7 @@ def driver_dashboard(request):
             "driver_display_name": driver_display_name,
         })
 
-    # Template mode
+    # --- 7) Template mode ---
     ctx = {
         "selected_date": day,
         "day": day,
@@ -3977,7 +4400,6 @@ def driver_dashboard(request):
         "DEFAULT_LNG": -71.0589,
     }
     return render(request, "scheduler/driver_dashboard.html", ctx)
-
 
 
 
